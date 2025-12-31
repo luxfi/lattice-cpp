@@ -1,0 +1,12 @@
+prefix=@PREFIX@
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: lux-lattice
+Description: Lux Lattice Library - GPU-Accelerated Lattice Cryptography
+Version: @VERSION@
+Requires:
+Libs: -L${libdir} -llattice
+Libs.private: @PRIVATE_LIBS@
+Cflags: -I${includedir}

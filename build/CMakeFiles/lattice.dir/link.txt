@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -arch arm64 -dynamiclib -Wl,-headerpad_max_install_names -o lib/liblattice.dylib -install_name @rpath/liblattice.dylib CMakeFiles/lattice.dir/src/lattice.cpp.o   -L/Users/z/work/luxcpp/lattice/../gpu/lib  -Wl,-rpath,/Users/z/work/luxcpp/lattice/../gpu/lib -framework Metal -framework Foundation -framework Accelerate -lmlx

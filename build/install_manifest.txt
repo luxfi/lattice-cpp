@@ -1,0 +1,4 @@
+/Users/z/work/luxcpp/install/lib/liblattice.dylib
+/Users/z/work/luxcpp/install/include/lattice.h
+/Users/z/work/luxcpp/install/lib/cmake/LuxLattice/LuxLatticeTargets.cmake
+/Users/z/work/luxcpp/install/lib/cmake/LuxLattice/LuxLatticeTargets-release.cmake

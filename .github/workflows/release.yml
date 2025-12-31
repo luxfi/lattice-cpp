@@ -1,0 +1,219 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 1.0.0)'
+        required: true
+        default: '1.0.0'
+
+env:
+  CMAKE_BUILD_TYPE: Release
+
+jobs:
+  build-macos:
+    runs-on: macos-14  # Apple Silicon
+    strategy:
+      matrix:
+        arch: [arm64, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew install cmake ninja
+
+      - name: Configure
+        run: |
+          mkdir build && cd build
+          cmake .. \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+            -DBUILD_SHARED=ON \
+            -DBUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create pkg-config file
+        run: |
+          mkdir -p build/lib/pkgconfig
+          VERSION=${{ steps.version.outputs.version }}
+          cat > build/lib/pkgconfig/lux-lattice.pc << EOF
+          prefix=/usr/local
+          exec_prefix=\${prefix}
+          libdir=\${prefix}/lib
+          includedir=\${prefix}/include
+
+          Name: lux-lattice
+          Description: Lux Lattice Library - GPU-Accelerated Lattice Cryptography
+          Version: ${VERSION}
+          Requires:
+          Libs: -L\${libdir} -llattice
+          Libs.private: -framework Metal -framework Foundation -lstdc++
+          Cflags: -I\${includedir}
+          EOF
+
+      - name: Create tarball
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          ARCH=${{ matrix.arch }}
+          mkdir -p dist/include dist/lib/pkgconfig
+          cp include/*.h dist/include/
+          cp build/lib/*.dylib dist/lib/
+          cp build/lib/pkgconfig/*.pc dist/lib/pkgconfig/
+          cd dist
+          tar -czvf ../lattice-${VERSION}-macos-${ARCH}.tar.gz .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lattice-macos-${{ matrix.arch }}
+          path: lattice-*.tar.gz
+
+  build-linux:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        arch: [amd64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential
+
+      - name: Configure
+        run: |
+          mkdir build && cd build
+          cmake .. \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED=ON \
+            -DBUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create pkg-config file
+        run: |
+          mkdir -p build/lib/pkgconfig
+          VERSION=${{ steps.version.outputs.version }}
+          cat > build/lib/pkgconfig/lux-lattice.pc << EOF
+          prefix=/usr/local
+          exec_prefix=\${prefix}
+          libdir=\${prefix}/lib
+          includedir=\${prefix}/include
+
+          Name: lux-lattice
+          Description: Lux Lattice Library - GPU-Accelerated Lattice Cryptography
+          Version: ${VERSION}
+          Requires:
+          Libs: -L\${libdir} -llattice
+          Libs.private: -lstdc++
+          Cflags: -I\${includedir}
+          EOF
+
+      - name: Create tarball
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          ARCH=${{ matrix.arch }}
+          mkdir -p dist/include dist/lib/pkgconfig
+          cp include/*.h dist/include/
+          cp build/lib/*.so dist/lib/ || cp build/lib/*.so.* dist/lib/ || true
+          cp build/lib/pkgconfig/*.pc dist/lib/pkgconfig/
+          cd dist
+          tar -czvf ../lattice-${VERSION}-linux-${ARCH}.tar.gz .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lattice-linux-${{ matrix.arch }}
+          path: lattice-*.tar.gz
+
+  release:
+    needs: [build-macos, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+            echo "tag=v${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Collect release files
+        run: |
+          mkdir -p release
+          find artifacts -name "*.tar.gz" -exec cp {} release/ \;
+          cd release
+          sha256sum *.tar.gz > SHA256SUMS
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Lux Lattice v${{ steps.version.outputs.version }}
+          body: |
+            ## Lux Lattice Library v${{ steps.version.outputs.version }}
+
+            GPU-accelerated lattice cryptography library.
+
+            ### Downloads
+
+            | Platform | Architecture | File |
+            |----------|--------------|------|
+            | macOS | arm64 | `lattice-${{ steps.version.outputs.version }}-macos-arm64.tar.gz` |
+            | macOS | x86_64 | `lattice-${{ steps.version.outputs.version }}-macos-x86_64.tar.gz` |
+            | Linux | amd64 | `lattice-${{ steps.version.outputs.version }}-linux-amd64.tar.gz` |
+
+            ### Installation
+
+            ```bash
+            # Download and extract
+            curl -LO https://github.com/luxfi/lattice-cpp/releases/download/v${{ steps.version.outputs.version }}/lattice-${{ steps.version.outputs.version }}-$(uname -s | tr A-Z a-z)-$(uname -m).tar.gz
+            tar -xzf lattice-*.tar.gz -C /usr/local
+
+            # Verify pkg-config
+            pkg-config --libs lux-lattice
+            ```
+          files: release/*
+          draft: false
+          prerelease: false
