@@ -1,40 +1,37 @@
 cmake_minimum_required(VERSION 3.18)
-project(LuxLattice VERSION 1.0.0 LANGUAGES CXX)
+project(lux-lattice VERSION 1.0.0 LANGUAGES CXX)
 
 # =============================================================================
 # Lux Lattice Library - GPU-Accelerated Lattice Cryptography
 # =============================================================================
 #
-# Depends on: luxcpp/gpu (foundation layer)
+# Contract: github.com/luxfi/luxcpp/LIBRARY_CONTRACT.md
+#   - CMake package: lux-lattice
+#   - Target: lux::lattice
+#   - Library: libluxlattice.{dylib,so}
+#   - Headers: include/lux/lattice/
+#   - Relocatable: @rpath on macOS, $ORIGIN on Linux
+#
+# Depends on: luxcpp/gpu (optional, for Metal NTT acceleration)
 #
 # Build Options:
 #   -DWITH_GPU=ON     Enable GPU acceleration via luxcpp/gpu
-#   -DBUILD_SHARED=ON Build shared library (default)
+#   -DBUILD_SHARED_LIBS=ON  Build shared library (default)
 #   -DBUILD_TESTS=ON  Build tests
 #
 # Usage:
 #   mkdir build && cd build
-#   cmake -DWITH_GPU=ON -DGPU_ROOT=../gpu ..
+#   cmake -DWITH_GPU=ON -DCMAKE_PREFIX_PATH=../gpu/build ..
 #   make -j$(nproc)
 #
 # =============================================================================
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+include(LuxLibrary)
 
 # Options
 option(WITH_GPU "Enable GPU acceleration via luxcpp/gpu" OFF)
-option(BUILD_SHARED "Build shared library" ON)
 option(BUILD_TESTS "Build tests" OFF)
-
-# GPU root directory (luxcpp/gpu)
-set(GPU_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../gpu" CACHE PATH "Path to luxcpp/gpu")
-
-# Output directories
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # =============================================================================
 # Source Files
@@ -45,43 +42,54 @@ set(LATTICE_SOURCES
 )
 
 set(LATTICE_HEADERS
-    include/lattice.h
+    include/lux/lattice/lattice.h
 )
 
 # =============================================================================
-# Library Target
+# Library Target (using shared LuxLibrary helper)
 # =============================================================================
 
-if(BUILD_SHARED)
-    add_library(lattice SHARED ${LATTICE_SOURCES})
-else()
-    add_library(lattice STATIC ${LATTICE_SOURCES})
+# Platform-specific frameworks
+set(LATTICE_FRAMEWORKS)
+if(APPLE)
+    list(APPEND LATTICE_FRAMEWORKS Metal Foundation Accelerate)
 endif()
 
-target_include_directories(lattice
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
+# Dependencies
+set(LATTICE_DEPS)
+if(WITH_GPU)
+    list(APPEND LATTICE_DEPS lux-gpu)
+endif()
+
+lux_add_library(
+    NAME lattice
+    VERSION ${PROJECT_VERSION}
+    DESCRIPTION "GPU-accelerated lattice cryptography for Lux"
+    SOURCES ${LATTICE_SOURCES}
+    HEADERS ${LATTICE_HEADERS}
+    DEPENDENCIES ${LATTICE_DEPS}
+    FRAMEWORKS ${LATTICE_FRAMEWORKS}
+    SHARED
 )
 
-# Platform-specific flags
+# Get the internal target name for additional configuration
+set(TARGET_NAME "lux-lattice")
+
+# Platform-specific compile flags
 if(APPLE)
     # Check if cross-compiling (e.g., x86_64 on arm64 runner)
     if(CMAKE_OSX_ARCHITECTURES AND NOT CMAKE_OSX_ARCHITECTURES STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
-        # Cross-compiling: use generic architecture flags
         if(CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
-            target_compile_options(lattice PRIVATE -O3 -march=x86-64-v2 -ffast-math)
+            target_compile_options(${TARGET_NAME} PRIVATE -O3 -march=x86-64-v2 -ffast-math)
         else()
-            target_compile_options(lattice PRIVATE -O3 -ffast-math)
+            target_compile_options(${TARGET_NAME} PRIVATE -O3 -ffast-math)
         endif()
     else()
         # Native build: use -march=native for best performance
-        target_compile_options(lattice PRIVATE -O3 -march=native -ffast-math)
+        target_compile_options(${TARGET_NAME} PRIVATE -O3 -march=native -ffast-math)
     endif()
-    # Link Apple frameworks (Metal, Accelerate for LAPACK)
-    target_link_libraries(lattice PRIVATE "-framework Metal" "-framework Foundation" "-framework Accelerate")
 elseif(UNIX)
-    target_compile_options(lattice PRIVATE -O3 -march=native -ffast-math)
+    target_compile_options(${TARGET_NAME} PRIVATE -O3 -march=native -ffast-math)
 endif()
 
 # =============================================================================
@@ -89,84 +97,16 @@ endif()
 # =============================================================================
 
 if(WITH_GPU)
-    # Look for luxcpp/gpu build output
-    set(GPU_LIB_PATH "${GPU_ROOT}/build/lib")
-    set(GPU_INCLUDE_PATH "${GPU_ROOT}")
-
-    if(EXISTS "${GPU_ROOT}/mlx_c_api.h")
-        message(STATUS "luxcpp/gpu found at: ${GPU_ROOT}")
-        target_compile_definitions(lattice PRIVATE WITH_MLX)
-        target_include_directories(lattice PRIVATE ${GPU_INCLUDE_PATH})
-
-        # Link against luxcpp/gpu's MLX library
-        if(EXISTS "${GPU_LIB_PATH}/libmlx.a")
-            target_link_directories(lattice PRIVATE ${GPU_LIB_PATH})
-            target_link_libraries(lattice PRIVATE mlx)
-            message(STATUS "Linking against: ${GPU_LIB_PATH}/libmlx.a")
-        elseif(EXISTS "${GPU_ROOT}/lib/libmlx.a")
-            target_link_directories(lattice PRIVATE "${GPU_ROOT}/lib")
-            target_link_libraries(lattice PRIVATE mlx)
-            message(STATUS "Linking against: ${GPU_ROOT}/lib/libmlx.a")
-        else()
-            message(WARNING "libmlx.a not found, GPU acceleration disabled")
-        endif()
-    else()
-        message(WARNING "luxcpp/gpu not found at ${GPU_ROOT}, building without GPU")
-    endif()
+    # find_package(lux-gpu) is handled by lux_add_library via DEPENDENCIES
+    # Add any additional GPU-specific configuration here
+    target_compile_definitions(${TARGET_NAME} PRIVATE WITH_MLX WITH_GPU)
 endif()
 
 # =============================================================================
-# Install Target
+# CI Relocatability Check
 # =============================================================================
 
-include(GNUInstallDirs)
-
-install(TARGETS lattice
-    EXPORT LuxLatticeTargets
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-)
-
-install(FILES ${LATTICE_HEADERS}
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-)
-
-install(EXPORT LuxLatticeTargets
-    FILE LuxLatticeTargets.cmake
-    NAMESPACE Lux::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/LuxLattice
-)
-
-# =============================================================================
-# pkg-config
-# =============================================================================
-
-# Determine private libs based on platform
-if(APPLE)
-    set(PKG_CONFIG_PRIVATE_LIBS "-framework Metal -framework Foundation -lstdc++")
-else()
-    set(PKG_CONFIG_PRIVATE_LIBS "-lstdc++")
-endif()
-
-# Generate pkg-config file
-configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/lux-lattice.pc.in
-    ${CMAKE_BINARY_DIR}/lib/pkgconfig/lux-lattice.pc
-    @ONLY
-)
-
-# Replace placeholders
-file(READ ${CMAKE_BINARY_DIR}/lib/pkgconfig/lux-lattice.pc PC_CONTENT)
-string(REPLACE "@PREFIX@" "${CMAKE_INSTALL_PREFIX}" PC_CONTENT "${PC_CONTENT}")
-string(REPLACE "@VERSION@" "${PROJECT_VERSION}" PC_CONTENT "${PC_CONTENT}")
-string(REPLACE "@PRIVATE_LIBS@" "${PKG_CONFIG_PRIVATE_LIBS}" PC_CONTENT "${PC_CONTENT}")
-file(WRITE ${CMAKE_BINARY_DIR}/lib/pkgconfig/lux-lattice.pc "${PC_CONTENT}")
-
-install(FILES ${CMAKE_BINARY_DIR}/lib/pkgconfig/lux-lattice.pc
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
-)
+lux_verify_relocatable(${TARGET_NAME})
 
 # =============================================================================
 # Tests
@@ -183,10 +123,12 @@ endif()
 
 message(STATUS "=================================================")
 message(STATUS "Lux Lattice Library Configuration:")
+message(STATUS "  Package:        lux-lattice")
+message(STATUS "  Target:         lux::lattice")
+message(STATUS "  Library:        libluxlattice.{dylib,so}")
 message(STATUS "  Version:        ${PROJECT_VERSION}")
-message(STATUS "  GPU (luxcpp/gpu): ${WITH_GPU}")
-message(STATUS "  GPU Root:       ${GPU_ROOT}")
-message(STATUS "  Shared Library: ${BUILD_SHARED}")
+message(STATUS "  GPU (lux-gpu):  ${WITH_GPU}")
+message(STATUS "  Shared:         ${BUILD_SHARED_LIBS}")
 message(STATUS "  Build Tests:    ${BUILD_TESTS}")
 message(STATUS "  Install Prefix: ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "=================================================")

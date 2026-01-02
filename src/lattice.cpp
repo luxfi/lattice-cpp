@@ -7,7 +7,7 @@
 // Copyright (C) 2024-2025 Lux Industries Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-#include "lattice.h"
+#include "lux/lattice/lattice.h"
 
 #include <cstdlib>
 #include <cstring>

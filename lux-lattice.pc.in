@@ -1,12 +1,13 @@
-prefix=@PREFIX@
+prefix=@CMAKE_INSTALL_PREFIX@
 exec_prefix=${prefix}
-libdir=${prefix}/lib
-includedir=${prefix}/include
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+resourcedir=${prefix}/@CMAKE_INSTALL_DATADIR@/lux/lattice
 
 Name: lux-lattice
 Description: Lux Lattice Library - GPU-Accelerated Lattice Cryptography
-Version: @VERSION@
+Version: @PROJECT_VERSION@
 Requires:
-Libs: -L${libdir} -llattice
-Libs.private: @PRIVATE_LIBS@
+Libs: -L${libdir} -lluxlattice
+Libs.private: @PKG_CONFIG_PRIVATE_LIBS@
 Cflags: -I${includedir}
