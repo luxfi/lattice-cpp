@@ -21,3 +21,9 @@ install_manifest.txt
 # OS
 .DS_Store
 Thumbs.db
+
+# AI assistant files (keep only LLM.md)
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+QWEN.md
