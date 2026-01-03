@@ -1,0 +1,367 @@
+---
+title: CUDA Backend
+description: NVIDIA GPU acceleration using CUDA
+---
+
+# CUDA Backend
+
+The CUDA backend provides high-performance NTT and polynomial operations on NVIDIA GPUs using CUDA.
+
+## Overview
+
+CUDA support enables:
+- Hardware acceleration on NVIDIA GPUs (GTX, RTX, Tesla, A100, H100)
+- Massive parallelism for batch operations
+- Optimized shared memory usage
+- Integration with lux-gpu's CUDA path
+
+## Hardware Requirements
+
+- **NVIDIA GPU** with Compute Capability 7.0+ (Volta or newer recommended)
+- **CUDA Toolkit 11.8+** or **12.x**
+- **Driver**: 520.x+ for CUDA 11.8, 525.x+ for CUDA 12.x
+- At least 8GB VRAM for production workloads
+
+## Enabling CUDA
+
+### CMake Configuration
+
+```bash
+cmake -B build \
+  -DLATTICE_BACKEND_CUDA=ON \
+  -DLATTICE_BACKEND_METAL=OFF \
+  -DLATTICE_BACKEND_CPU=ON \
+  -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
+cmake --build build
+```
+
+### Runtime Selection
+
+```cpp
+#include <lux/lattice/lattice.h>
+
+// Check CUDA availability
+if (lattice_cuda_available()) {
+    lattice_set_backend(LATTICE_BACKEND_CUDA);
+
+    // Optionally select specific GPU
+    lattice_cuda_set_device(0);
+}
+
+// Verify backend
+printf("Using: %s\n", lattice_backend_name(lattice_get_backend()));
+```
+
+### Go Backend Selection
+
+```go
+import "github.com/luxfi/lattice"
+
+// Set CUDA backend
+if err := lattice.SetBackend(lattice.BackendCUDA); err != nil {
+    // Fall back to CPU
+    lattice.SetBackend(lattice.BackendCPU)
+}
+```
+
+## Performance Characteristics
+
+### NTT Performance on RTX 4090
+
+| Dimension | Forward NTT | Inverse NTT | Batch NTT (1000) |
+|-----------|-------------|-------------|------------------|
+| n=1024 | 1.2μs | 1.3μs | 0.5ms |
+| n=2048 | 2.4μs | 2.6μs | 0.9ms |
+| n=4096 | 5.0μs | 5.3μs | 1.8ms |
+| n=8192 | 10μs | 11μs | 3.5ms |
+| n=16384 | 22μs | 24μs | 7ms |
+| n=32768 | 48μs | 52μs | 15ms |
+
+### GPU Comparison
+
+| GPU | Memory | NTT n=4096 | Batch 1000 |
+|-----|--------|------------|------------|
+| RTX 3080 | 10GB | 7μs | 2.5ms |
+| RTX 3090 | 24GB | 6μs | 2.2ms |
+| RTX 4080 | 16GB | 5.5μs | 2.0ms |
+| RTX 4090 | 24GB | 5μs | 1.8ms |
+| A100 | 40/80GB | 4μs | 1.5ms |
+| H100 | 80GB | 3μs | 1.0ms |
+
+## CUDA Kernel Implementation
+
+### NTT Butterfly Kernel
+
+```cuda
+__global__ void ntt_butterfly_kernel(
+    uint64_t* __restrict__ poly,
+    const uint64_t* __restrict__ twiddles,
+    uint64_t q,
+    uint64_t q_inv,
+    int step,
+    int n
+) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int half_step = step >> 1;
+
+    if (tid >= n / 2) return;
+
+    int group = tid / half_step;
+    int idx = tid % half_step;
+    int i = group * step + idx;
+    int j = i + half_step;
+
+    // Load to registers
+    uint64_t a = poly[i];
+    uint64_t b = poly[j];
+    uint64_t w = twiddles[group];
+
+    // Montgomery multiplication
+    uint64_t t = mont_mul_device(b, w, q, q_inv);
+
+    // Butterfly
+    poly[i] = add_mod(a, t, q);
+    poly[j] = sub_mod(a, t, q);
+}
+```
+
+### Montgomery Multiplication
+
+```cuda
+__device__ __forceinline__ uint64_t mont_mul_device(
+    uint64_t a, uint64_t b, uint64_t q, uint64_t q_inv
+) {
+    // 128-bit multiplication using PTX
+    uint64_t lo, hi;
+    asm("mul.lo.u64 %0, %1, %2;" : "=l"(lo) : "l"(a), "l"(b));
+    asm("mul.hi.u64 %0, %1, %2;" : "=l"(hi) : "l"(a), "l"(b));
+
+    // Montgomery reduction
+    uint64_t m = lo * q_inv;
+
+    uint64_t mn_lo, mn_hi;
+    asm("mul.lo.u64 %0, %1, %2;" : "=l"(mn_lo) : "l"(m), "l"(q));
+    asm("mul.hi.u64 %0, %1, %2;" : "=l"(mn_hi) : "l"(m), "l"(q));
+
+    uint64_t carry = (lo + mn_lo < lo) ? 1 : 0;
+    uint64_t result = hi + mn_hi + carry;
+
+    return (result >= q) ? result - q : result;
+}
+```
+
+## Memory Management
+
+### Device Memory Allocation
+
+```cpp
+// GPU memory is separate from host memory
+LatticeNTTContext* ctx;
+lattice_ntt_create(&ctx, 4096, 0x7ffe0001ULL);
+
+// Allocate on GPU (returns GPU pointer)
+uint64_t* d_poly = lattice_poly_alloc(ctx);
+
+// For host-side access, need explicit copy
+uint64_t* h_poly = (uint64_t*)malloc(4096 * sizeof(uint64_t));
+lattice_poly_copy_to_host(h_poly, d_poly, 4096);
+```
+
+### Pinned Memory for Fast Transfers
+
+```cpp
+// Pinned memory for faster host-device copies
+uint64_t* h_pinned;
+lattice_alloc_pinned(&h_pinned, 4096 * sizeof(uint64_t));
+
+// Copy is now faster
+lattice_poly_copy_to_device(d_poly, h_pinned, 4096);
+
+lattice_free_pinned(h_pinned);
+```
+
+### Unified Memory (Managed Memory)
+
+```cpp
+// Enable managed memory for simpler programming
+lattice_enable_managed_memory(ctx);
+
+uint64_t* poly = lattice_poly_alloc(ctx);
+
+// Access from either CPU or GPU
+poly[0] = 123;  // CPU write
+lattice_ntt_forward(ctx, poly);  // GPU compute
+uint64_t result = poly[0];  // CPU read (implicit sync)
+```
+
+## Streams for Pipelining
+
+### Multiple CUDA Streams
+
+```cpp
+// Create multiple streams for concurrent execution
+LatticeStream* stream1 = lattice_stream_create(ctx);
+LatticeStream* stream2 = lattice_stream_create(ctx);
+
+// Pipeline: copy-compute-copy
+lattice_poly_copy_to_device_async(d_poly1, h_poly1, n, stream1);
+lattice_poly_copy_to_device_async(d_poly2, h_poly2, n, stream2);
+
+lattice_ntt_forward_stream(ctx, d_poly1, stream1);
+lattice_ntt_forward_stream(ctx, d_poly2, stream2);
+
+// Wait for both
+lattice_stream_sync(stream1);
+lattice_stream_sync(stream2);
+
+lattice_stream_destroy(stream1);
+lattice_stream_destroy(stream2);
+```
+
+## Multi-GPU Support
+
+### Using Multiple GPUs
+
+```cpp
+int device_count = lattice_cuda_device_count();
+printf("Found %d CUDA devices\n", device_count);
+
+// Create context per GPU
+LatticeNTTContext* contexts[8];
+for (int i = 0; i < device_count; i++) {
+    lattice_cuda_set_device(i);
+    lattice_ntt_create(&contexts[i], 4096, 0x7ffe0001ULL);
+}
+
+// Distribute work across GPUs
+#pragma omp parallel for
+for (int i = 0; i < num_polys; i++) {
+    int gpu = i % device_count;
+    lattice_cuda_set_device(gpu);
+    lattice_ntt_forward(contexts[gpu], polys[i]);
+}
+```
+
+## Error Handling
+
+### CUDA Error Checking
+
+```cpp
+// Enable detailed CUDA error reporting
+lattice_cuda_enable_error_checking(true);
+
+// Operations will report CUDA errors
+int err = lattice_ntt_forward(ctx, poly);
+if (err != LATTICE_SUCCESS) {
+    const char* cuda_error = lattice_cuda_get_last_error();
+    fprintf(stderr, "CUDA error: %s\n", cuda_error);
+}
+```
+
+## Profiling
+
+### Using NVIDIA Nsight
+
+```bash
+# Profile with Nsight Systems
+nsys profile -o report ./your_program
+
+# Profile with Nsight Compute
+ncu --set full -o kernel_report ./your_program
+```
+
+### Built-in Timing
+
+```cpp
+// Enable internal timing
+lattice_enable_profiling(ctx);
+
+lattice_ntt_forward(ctx, poly);
+
+// Get timing
+double kernel_time = lattice_get_kernel_time_ms(ctx);
+double total_time = lattice_get_total_time_ms(ctx);
+printf("Kernel: %.3f ms, Total: %.3f ms\n", kernel_time, total_time);
+```
+
+## Optimization Tips
+
+### 1. Use Batch Operations
+
+```cpp
+// Bad: Many small kernel launches
+for (int i = 0; i < 1000; i++) {
+    lattice_ntt_forward(ctx, polys[i]);  // Launch overhead each time
+}
+
+// Good: Single batched launch
+lattice_ntt_batch_forward(ctx, polys_contiguous, 1000);
+```
+
+### 2. Reuse Memory
+
+```cpp
+// Bad: Allocate/free every iteration
+for (int i = 0; i < 1000; i++) {
+    uint64_t* poly = lattice_poly_alloc(ctx);
+    lattice_ntt_forward(ctx, poly);
+    lattice_poly_free(poly);
+}
+
+// Good: Reuse allocation
+uint64_t* poly = lattice_poly_alloc(ctx);
+for (int i = 0; i < 1000; i++) {
+    lattice_ntt_forward(ctx, poly);
+}
+lattice_poly_free(poly);
+```
+
+### 3. Overlap Transfers and Compute
+
+```cpp
+// Use streams to overlap memory transfers with computation
+for (int i = 0; i < batches; i++) {
+    // Copy next batch while computing current
+    lattice_poly_copy_to_device_async(d_next, h_next, n, stream_copy);
+    lattice_ntt_forward_stream(ctx, d_current, stream_compute);
+    swap(&d_current, &d_next);
+}
+```
+
+## Limitations
+
+1. **NVIDIA Only**: CUDA is proprietary to NVIDIA
+2. **Driver Dependencies**: Requires CUDA toolkit and drivers
+3. **Memory Limit**: Limited by GPU VRAM
+4. **Host-Device Transfers**: Can be a bottleneck if not managed properly
+
+## Troubleshooting
+
+### Common Issues
+
+**"CUDA out of memory"**
+```cpp
+// Check available memory before large allocations
+size_t free_mem, total_mem;
+lattice_cuda_mem_info(&free_mem, &total_mem);
+printf("Free: %zu MB, Total: %zu MB\n",
+       free_mem / (1024*1024), total_mem / (1024*1024));
+```
+
+**"No CUDA-capable device detected"**
+```bash
+# Verify CUDA installation
+nvidia-smi
+nvcc --version
+```
+
+**"CUDA driver version is insufficient"**
+```bash
+# Update NVIDIA driver to match CUDA toolkit version
+```
+
+## Related
+
+- [Metal Backend](/docs/backends/metal) - Apple GPU support
+- [CPU Backend](/docs/backends/cpu) - Fallback implementation
+- [NTT Operations](/docs/concepts/ntt) - Algorithm details

@@ -1,0 +1,512 @@
+---
+title: Go Bindings
+description: Go package documentation for lux-lattice
+---
+
+# Go Bindings
+
+The `github.com/luxfi/lattice` package provides idiomatic Go bindings for lux-lattice with automatic memory management and GPU acceleration.
+
+## Installation
+
+```bash
+go get github.com/luxfi/lattice
+```
+
+### Requirements
+
+- Go 1.21+
+- CGO enabled (`CGO_ENABLED=1`)
+- lux-lattice C library installed
+
+### Build from Source
+
+```bash
+git clone https://github.com/luxfi/lattice
+cd lattice
+
+# Build C library
+cmake -B build -DBUILD_SHARED_LIBS=ON
+cmake --build build
+
+# Install (or set LD_LIBRARY_PATH)
+sudo cmake --install build
+
+# Test Go bindings
+go test ./...
+```
+
+## Ring Type
+
+The `Ring` type represents a polynomial ring R_q = Z_q[X]/(X^n + 1).
+
+### NewRing
+
+Create a new ring with given dimension and moduli.
+
+```go
+func NewRing(n int, moduli []uint64) (*Ring, error)
+```
+
+**Parameters**:
+- `n`: Ring dimension (power of 2)
+- `moduli`: Prime moduli (each q ≡ 1 mod 2n)
+
+**Example**:
+```go
+// Single modulus
+ring, err := lattice.NewRing(1024, []uint64{0x7ffe0001})
+
+// RNS (multiple moduli)
+ring, err := lattice.NewRing(2048, []uint64{
+    0x7ffe0001,
+    0xfff00001,
+    0x1fff8001,
+})
+```
+
+### Ring Methods
+
+```go
+// Get ring dimension
+func (r *Ring) N() int
+
+// Get moduli
+func (r *Ring) Q() []uint64
+
+// Get number of RNS levels
+func (r *Ring) Levels() int
+```
+
+## Poly Type
+
+The `Poly` type represents a polynomial in the ring.
+
+### NewPoly
+
+Create a new polynomial.
+
+```go
+func (r *Ring) NewPoly() *Poly
+```
+
+**Example**:
+```go
+poly := ring.NewPoly()
+```
+
+### Poly Methods
+
+```go
+// Get coefficients at level
+func (p *Poly) Coeffs(level int) []uint64
+
+// Set coefficient
+func (p *Poly) SetCoeff(level, index int, value uint64)
+
+// Get coefficient
+func (p *Poly) GetCoeff(level, index int) uint64
+
+// Copy polynomial
+func (p *Poly) Copy() *Poly
+
+// Zero all coefficients
+func (p *Poly) Zero()
+```
+
+## NTT Operations
+
+### NTT
+
+Forward NTT (coefficient to evaluation domain).
+
+```go
+func (r *Ring) NTT(poly *Poly)
+```
+
+### InverseNTT
+
+Inverse NTT (evaluation to coefficient domain).
+
+```go
+func (r *Ring) InverseNTT(poly *Poly)
+```
+
+### NTTMontgomery
+
+Forward NTT with output in Montgomery form.
+
+```go
+func (r *Ring) NTTMontgomery(poly *Poly)
+```
+
+### InverseNTTMontgomery
+
+Inverse NTT from Montgomery form.
+
+```go
+func (r *Ring) InverseNTTMontgomery(poly *Poly)
+```
+
+### Batch Operations
+
+```go
+// Batch forward NTT
+func (r *Ring) BatchNTT(polys []*Poly)
+
+// Batch inverse NTT
+func (r *Ring) BatchInverseNTT(polys []*Poly)
+```
+
+## Arithmetic Operations
+
+### Add
+
+Add two polynomials: c = a + b
+
+```go
+func (r *Ring) Add(a, b, c *Poly)
+```
+
+### Sub
+
+Subtract two polynomials: c = a - b
+
+```go
+func (r *Ring) Sub(a, b, c *Poly)
+```
+
+### Neg
+
+Negate polynomial: a = -a
+
+```go
+func (r *Ring) Neg(a *Poly)
+```
+
+### MulScalar
+
+Multiply by scalar: c = a * scalar
+
+```go
+func (r *Ring) MulScalar(a *Poly, scalar uint64, c *Poly)
+```
+
+### MulPoly
+
+Polynomial multiplication: c = a * b
+
+```go
+func (r *Ring) MulPoly(a, b, c *Poly)
+```
+
+This performs full NTT-based multiplication. For multiple multiplications, keeping polynomials in NTT domain is more efficient.
+
+### MulCoeffsMontgomery
+
+Coefficient-wise multiplication in NTT/Montgomery domain.
+
+```go
+func (r *Ring) MulCoeffsMontgomery(a, b, c *Poly)
+```
+
+**Example** (efficient repeated multiplication):
+```go
+// Convert to NTT domain once
+ring.NTT(a)
+ring.NTT(b)
+
+// Multiple coefficient-wise multiplications
+ring.MulCoeffsMontgomery(a, b, c)
+
+// Convert back when done
+ring.InverseNTT(c)
+```
+
+### AddMul
+
+Multiply-add: c = c + a * b
+
+```go
+func (r *Ring) AddMul(a, b, c *Poly)
+```
+
+## Sampling
+
+### SampleUniform
+
+Sample uniform random polynomial.
+
+```go
+func (r *Ring) SampleUniform(poly *Poly)
+```
+
+### SampleUniformFrom
+
+Sample with custom random source.
+
+```go
+func (r *Ring) SampleUniformFrom(poly *Poly, source io.Reader)
+```
+
+### SampleGaussian
+
+Sample discrete Gaussian with given σ.
+
+```go
+func (r *Ring) SampleGaussian(poly *Poly, sigma float64)
+```
+
+### SampleGaussianCT
+
+Constant-time discrete Gaussian sampling (for secrets).
+
+```go
+func (r *Ring) SampleGaussianCT(poly *Poly, sigma float64)
+```
+
+### SampleTernary
+
+Sample ternary polynomial {-1, 0, 1} with Hamming weight.
+
+```go
+func (r *Ring) SampleTernary(poly *Poly, hw int)
+```
+
+### SampleTernaryUniform
+
+Sample uniform ternary polynomial.
+
+```go
+func (r *Ring) SampleTernaryUniform(poly *Poly)
+```
+
+### SampleBinary
+
+Sample binary polynomial {0, 1}.
+
+```go
+func (r *Ring) SampleBinary(poly *Poly)
+```
+
+### SampleCBD
+
+Sample centered binomial distribution.
+
+```go
+func (r *Ring) SampleCBD(poly *Poly, eta int)
+```
+
+## Automorphisms
+
+### Automorphism
+
+Apply automorphism: result(X) = poly(X^k)
+
+```go
+func (r *Ring) Automorphism(poly *Poly, k int, result *Poly)
+```
+
+### Conjugate
+
+Apply conjugation: result(X) = poly(X^{-1})
+
+```go
+func (r *Ring) Conjugate(poly *Poly, result *Poly)
+```
+
+### GaloisElement
+
+Get Galois element for a rotation.
+
+```go
+func (r *Ring) GaloisElement(rotation int) int
+```
+
+## Serialization
+
+### MarshalBinary
+
+Serialize polynomial to bytes.
+
+```go
+func (p *Poly) MarshalBinary() ([]byte, error)
+```
+
+### UnmarshalBinary
+
+Deserialize polynomial from bytes.
+
+```go
+func (p *Poly) UnmarshalBinary(data []byte) error
+```
+
+**Example**:
+```go
+// Serialize
+data, err := poly.MarshalBinary()
+
+// Deserialize
+newPoly := ring.NewPoly()
+err = newPoly.UnmarshalBinary(data)
+```
+
+## Backend Control
+
+### SetBackend
+
+Set compute backend.
+
+```go
+type Backend int
+
+const (
+    BackendAuto Backend = iota
+    BackendCPU
+    BackendMetal
+    BackendCUDA
+)
+
+func SetBackend(backend Backend) error
+```
+
+### GetBackend
+
+Get current backend.
+
+```go
+func GetBackend() Backend
+```
+
+### BackendName
+
+Get backend name.
+
+```go
+func (b Backend) String() string
+```
+
+## Utility Functions
+
+### Version
+
+Get library version.
+
+```go
+func Version() string
+```
+
+### IsGPUAvailable
+
+Check if GPU acceleration is available.
+
+```go
+func IsGPUAvailable() bool
+```
+
+## Complete Example
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+
+    "github.com/luxfi/lattice"
+)
+
+func main() {
+    // Create ring
+    ring, err := lattice.NewRing(1024, []uint64{0x7ffe0001})
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Ring: n=%d, q=%v\n", ring.N(), ring.Q())
+    fmt.Printf("GPU available: %v\n", lattice.IsGPUAvailable())
+
+    // Create polynomials
+    a := ring.NewPoly()
+    b := ring.NewPoly()
+    c := ring.NewPoly()
+
+    // Sample random polynomials
+    ring.SampleUniform(a)
+    ring.SampleGaussian(b, 3.19)
+
+    // Multiply in NTT domain
+    ring.NTT(a)
+    ring.NTT(b)
+    ring.MulCoeffsMontgomery(a, b, c)
+    ring.InverseNTT(c)
+
+    // Serialize result
+    data, err := c.MarshalBinary()
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Result size: %d bytes\n", len(data))
+}
+```
+
+## Kyber/ML-KEM Example
+
+```go
+package main
+
+import (
+    "github.com/luxfi/lattice"
+)
+
+func kyberKeyGen(ring *lattice.Ring) (*lattice.Poly, *lattice.Poly, error) {
+    // Secret key: ternary polynomial
+    sk := ring.NewPoly()
+    ring.SampleTernary(sk, 64)
+
+    // Error polynomial
+    e := ring.NewPoly()
+    ring.SampleCBD(e, 2)
+
+    // Random a
+    a := ring.NewPoly()
+    ring.SampleUniform(a)
+
+    // Public key: pk = a*sk + e
+    pk := ring.NewPoly()
+    ring.NTT(a)
+    ring.NTT(sk)
+    ring.MulCoeffsMontgomery(a, sk, pk)
+    ring.InverseNTT(pk)
+    ring.Add(pk, e, pk)
+
+    // Convert sk back to coefficient form
+    ring.InverseNTT(sk)
+
+    return sk, pk, nil
+}
+```
+
+## Performance Tips
+
+1. **Minimize NTT conversions**: Keep polynomials in NTT domain for repeated operations
+
+2. **Use batch operations**: Process multiple polynomials together for GPU efficiency
+
+3. **Preallocate**: Reuse polynomial objects instead of allocating new ones
+
+4. **Montgomery form**: Use `MulCoeffsMontgomery` for NTT-domain multiplication
+
+```go
+// Bad: frequent allocations
+for i := 0; i < 1000; i++ {
+    result := ring.NewPoly()
+    ring.MulPoly(a, b, result)
+}
+
+// Good: preallocate and reuse
+result := ring.NewPoly()
+for i := 0; i < 1000; i++ {
+    ring.MulPoly(a, b, result)
+}
+```

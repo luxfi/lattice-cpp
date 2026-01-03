@@ -2,7 +2,8 @@
 // Lux Lattice Library Implementation
 // =============================================================================
 //
-// GPU-accelerated lattice operations using MLX for Metal/CUDA/CPU backends.
+// GPU-accelerated lattice operations using lux-gpu layer for Metal/CUDA/CPU.
+// The GPU layer handles backend selection - lattice just calls its API.
 //
 // Copyright (C) 2024-2025 Lux Industries Inc.
 // SPDX-License-Identifier: Apache-2.0
@@ -18,9 +19,30 @@
 #include <unordered_map>
 #include <memory>
 
-#ifdef WITH_MLX
-#include <mlx/mlx.h>
-namespace mx = mlx::core;
+// GPU layer NTT API (handles Metal/CUDA/CPU automatically)
+// Only available when compiled with -DWITH_GPU=ON
+#ifdef WITH_GPU
+extern "C" {
+    typedef struct MlxNTTContext MlxNTTContext;
+    bool mlx_ntt_gpu_available(void);
+    const char* mlx_ntt_backend_name(void);
+    MlxNTTContext* mlx_ntt_create(uint32_t N, uint64_t Q);
+    void mlx_ntt_destroy(MlxNTTContext* ctx);
+    int mlx_ntt_forward(MlxNTTContext* ctx, uint64_t* data, uint32_t batch);
+    int mlx_ntt_inverse(MlxNTTContext* ctx, uint64_t* data, uint32_t batch);
+    int mlx_ntt_pointwise_mul(MlxNTTContext* ctx, uint64_t* result,
+                              const uint64_t* a, const uint64_t* b, uint32_t batch);
+}
+#else
+// CPU-only stub declarations
+typedef struct MlxNTTContext MlxNTTContext;
+static inline bool mlx_ntt_gpu_available(void) { return false; }
+static inline const char* mlx_ntt_backend_name(void) { return "cpu"; }
+static inline MlxNTTContext* mlx_ntt_create(uint32_t, uint64_t) { return nullptr; }
+static inline void mlx_ntt_destroy(MlxNTTContext*) {}
+static inline int mlx_ntt_forward(MlxNTTContext*, uint64_t*, uint32_t) { return -1; }
+static inline int mlx_ntt_inverse(MlxNTTContext*, uint64_t*, uint32_t) { return -1; }
+static inline int mlx_ntt_pointwise_mul(MlxNTTContext*, uint64_t*, const uint64_t*, const uint64_t*, uint32_t) { return -1; }
 #endif
 
 // =============================================================================
@@ -118,12 +140,9 @@ struct LatticeNTTContext {
     std::vector<uint64_t> inv_tw_precon;  // Barrett precomputation for inv twiddles
     std::vector<uint32_t> bit_rev;        // Bit-reversal permutation
 
-#ifdef WITH_MLX
-    mx::array gpu_twiddles{};
-    mx::array gpu_inv_twiddles{};
-    mx::array gpu_bit_rev{};
+    // GPU layer context (handles Metal/CUDA/CPU automatically)
+    MlxNTTContext* gpu_ctx = nullptr;
     bool use_gpu = false;
-#endif
 };
 
 // Cache for NTT contexts
@@ -131,50 +150,15 @@ static std::unordered_map<uint64_t, std::unique_ptr<LatticeNTTContext>> g_contex
 static std::mutex g_cache_mutex;
 
 // =============================================================================
-// Backend Detection
+// Backend Detection (delegated to GPU layer)
 // =============================================================================
 
-#ifdef WITH_MLX
-static bool g_gpu_checked = false;
-static bool g_gpu_available = false;
-
-static void check_gpu_once() {
-    if (!g_gpu_checked) {
-        g_gpu_checked = true;
-        try {
-            // Try to create a small array on GPU
-            auto test = mx::zeros({1}, mx::float32);
-            g_gpu_available = true;
-        } catch (...) {
-            g_gpu_available = false;
-        }
-    }
-}
-#endif
-
 extern "C" bool lattice_gpu_available(void) {
-#ifdef WITH_MLX
-    check_gpu_once();
-    return g_gpu_available;
-#else
-    return false;
-#endif
+    return mlx_ntt_gpu_available();
 }
 
 extern "C" const char* lattice_get_backend(void) {
-#ifdef WITH_MLX
-    check_gpu_once();
-    if (g_gpu_available) {
-        #if defined(__APPLE__)
-        return "Metal";
-        #elif defined(__linux__)
-        return "CUDA";
-        #else
-        return "MLX";
-        #endif
-    }
-#endif
-    return "CPU";
+    return mlx_ntt_backend_name();
 }
 
 extern "C" void lattice_clear_cache(void) {
@@ -239,15 +223,18 @@ extern "C" LatticeNTTContext* lattice_ntt_create(uint32_t N, uint64_t Q) {
         return nullptr;
     }
 
-    // Check cache first
+    // Check cache first (for CPU twiddle factors - expensive to compute)
     uint64_t key = ((uint64_t)N << 48) | (Q & 0xFFFFFFFFFFFF);
     {
         std::lock_guard<std::mutex> lock(g_cache_mutex);
         auto it = g_context_cache.find(key);
         if (it != g_context_cache.end()) {
-            // Return a copy
-            LatticeNTTContext* copy = new LatticeNTTContext(*it->second);
-            return copy;
+            // Copy cached CPU data, but create fresh GPU context
+            LatticeNTTContext* ctx = new LatticeNTTContext(*it->second);
+            // IMPORTANT: Don't share GPU context - create our own
+            ctx->gpu_ctx = mlx_ntt_create(N, Q);
+            ctx->use_gpu = (ctx->gpu_ctx != nullptr);
+            return ctx;
         }
     }
 
@@ -268,28 +255,31 @@ extern "C" LatticeNTTContext* lattice_ntt_create(uint32_t N, uint64_t Q) {
 
     compute_twiddles(ctx);
 
-#ifdef WITH_MLX
-    check_gpu_once();
-    ctx->use_gpu = g_gpu_available;
-    if (ctx->use_gpu) {
-        // Upload twiddles to GPU
-        ctx->gpu_twiddles = mx::array(ctx->twiddles.data(), {(int)N}, mx::uint64);
-        ctx->gpu_inv_twiddles = mx::array(ctx->inv_twiddles.data(), {(int)N}, mx::uint64);
-        ctx->gpu_bit_rev = mx::array(ctx->bit_rev.data(), {(int)N}, mx::uint32);
-    }
-#endif
+    // Initialize GPU layer context (each context owns its own)
+    ctx->gpu_ctx = mlx_ntt_create(N, Q);
+    ctx->use_gpu = (ctx->gpu_ctx != nullptr);
 
-    // Add to cache
+    // Cache CPU data only (twiddles are expensive to compute)
+    // NOTE: gpu_ctx is NOT shared - each context creates its own
     {
         std::lock_guard<std::mutex> lock(g_cache_mutex);
-        g_context_cache[key] = std::unique_ptr<LatticeNTTContext>(new LatticeNTTContext(*ctx));
+        LatticeNTTContext* cached = new LatticeNTTContext(*ctx);
+        cached->gpu_ctx = nullptr;  // Don't cache GPU context
+        cached->use_gpu = false;
+        g_context_cache[key] = std::unique_ptr<LatticeNTTContext>(cached);
     }
 
     return ctx;
 }
 
 extern "C" void lattice_ntt_destroy(LatticeNTTContext* ctx) {
-    delete ctx;
+    if (ctx) {
+        if (ctx->gpu_ctx) {
+            mlx_ntt_destroy(ctx->gpu_ctx);
+            ctx->gpu_ctx = nullptr;
+        }
+        delete ctx;
+    }
 }
 
 extern "C" void lattice_ntt_get_params(const LatticeNTTContext* ctx,
@@ -374,14 +364,14 @@ extern "C" int lattice_ntt_forward(LatticeNTTContext* ctx, uint64_t* data, uint3
     uint32_t N = ctx->N;
     uint64_t Q = ctx->Q;
 
-#ifdef WITH_MLX
-    if (ctx->use_gpu && batch >= 4) {
-        // GPU path for large batches
-        // TODO: Implement MLX kernel
+    // GPU path via lux-gpu layer (handles Metal/CUDA/CPU selection)
+    if (ctx->gpu_ctx) {
+        int err = mlx_ntt_forward(ctx->gpu_ctx, data, batch);
+        if (err == 0) return LATTICE_SUCCESS;
+        // Fall through to CPU on error
     }
-#endif
 
-    // CPU path
+    // CPU fallback path
     for (uint32_t b = 0; b < batch; ++b) {
         ntt_forward_cpu(data + b * N, N, Q, ctx->twiddles, ctx->bit_rev);
     }
@@ -395,14 +385,14 @@ extern "C" int lattice_ntt_inverse(LatticeNTTContext* ctx, uint64_t* data, uint3
     uint32_t N = ctx->N;
     uint64_t Q = ctx->Q;
 
-#ifdef WITH_MLX
-    if (ctx->use_gpu && batch >= 4) {
-        // GPU path for large batches
-        // TODO: Implement MLX kernel
+    // GPU path via lux-gpu layer (handles Metal/CUDA/CPU selection)
+    if (ctx->gpu_ctx) {
+        int err = mlx_ntt_inverse(ctx->gpu_ctx, data, batch);
+        if (err == 0) return LATTICE_SUCCESS;
+        // Fall through to CPU on error
     }
-#endif
 
-    // CPU path
+    // CPU fallback path
     for (uint32_t b = 0; b < batch; ++b) {
         ntt_inverse_cpu(data + b * N, N, Q, ctx->N_inv, ctx->inv_twiddles, ctx->bit_rev);
     }

@@ -27,3 +27,5 @@ AGENTS.md
 CLAUDE.md
 GEMINI.md
 QWEN.md
+build-local/
+build-gpu/

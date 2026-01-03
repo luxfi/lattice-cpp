@@ -1,0 +1,263 @@
+---
+title: Number Theoretic Transform
+description: Fast polynomial multiplication using NTT for lattice cryptography
+---
+
+# Number Theoretic Transform (NTT)
+
+The Number Theoretic Transform is the foundation of efficient polynomial multiplication in lattice-based cryptography. It's analogous to the Fast Fourier Transform (FFT) but operates over finite fields instead of complex numbers.
+
+## Mathematical Background
+
+For a polynomial ring R_q = Z_q[X]/(X^n + 1) where:
+- n is a power of 2 (typically 256, 512, 1024, 2048, or 4096)
+- q is a prime satisfying q ≡ 1 (mod 2n)
+
+The NTT converts a polynomial from coefficient representation to evaluation representation, enabling element-wise multiplication instead of expensive convolution.
+
+### Negacyclic NTT
+
+Since we work in the ring Z_q[X]/(X^n + 1), we use the **negacyclic NTT** which correctly handles the X^n = -1 reduction.
+
+The forward NTT is defined as:
+```
+â[i] = Σ(j=0 to n-1) a[j] · ω^(2i+1)j (mod q)
+```
+
+Where ω is a primitive 2n-th root of unity in Z_q.
+
+## Algorithms
+
+### Cooley-Tukey (Forward NTT)
+
+The forward NTT uses decimation-in-time (DIT) with the Cooley-Tukey butterfly:
+
+```cpp
+// Forward butterfly operation
+void ct_butterfly(uint64_t* a, uint64_t* b, uint64_t w, uint64_t q) {
+    uint64_t t = mul_mod(*b, w, q);  // t = b * ω
+    *b = sub_mod(*a, t, q);           // b' = a - t
+    *a = add_mod(*a, t, q);           // a' = a + t
+}
+```
+
+The algorithm processes pairs of elements, halving the problem size at each stage:
+
+```cpp
+void ntt_forward(uint64_t* poly, size_t n, uint64_t* twiddles, uint64_t q) {
+    size_t t = n;
+    for (size_t m = 1; m < n; m *= 2) {
+        t /= 2;
+        for (size_t i = 0; i < m; i++) {
+            size_t j1 = 2 * i * t;
+            size_t j2 = j1 + t;
+            uint64_t w = twiddles[m + i];
+            for (size_t j = j1; j < j2; j++) {
+                ct_butterfly(&poly[j], &poly[j + t], w, q);
+            }
+        }
+    }
+}
+```
+
+### Gentleman-Sande (Inverse NTT)
+
+The inverse NTT uses decimation-in-frequency (DIF) with the Gentleman-Sande butterfly:
+
+```cpp
+// Inverse butterfly operation
+void gs_butterfly(uint64_t* a, uint64_t* b, uint64_t w_inv, uint64_t q) {
+    uint64_t t = sub_mod(*a, *b, q);  // t = a - b
+    *a = add_mod(*a, *b, q);          // a' = a + b
+    *b = mul_mod(t, w_inv, q);        // b' = (a - b) * ω^(-1)
+}
+```
+
+After the inverse NTT, results must be scaled by n^(-1) mod q.
+
+## API Usage
+
+### C API
+
+```cpp
+#include <lux/lattice/lattice.h>
+
+// Create NTT context
+LatticeNTTContext* ctx;
+int err = lattice_ntt_create(&ctx, 1024, 0x7ffe0001ULL);
+if (err != LATTICE_SUCCESS) {
+    // Handle error
+}
+
+// Allocate and initialize polynomial
+uint64_t* poly = (uint64_t*)aligned_alloc(64, 1024 * sizeof(uint64_t));
+for (size_t i = 0; i < 1024; i++) {
+    poly[i] = i;  // Sample data
+}
+
+// Forward NTT (in-place)
+lattice_ntt_forward(ctx, poly);
+
+// Now poly contains NTT coefficients
+// Can do element-wise operations...
+
+// Inverse NTT (in-place)
+lattice_ntt_inverse(ctx, poly);
+
+// Cleanup
+free(poly);
+lattice_ntt_destroy(ctx);
+```
+
+### Polynomial Multiplication
+
+The main use of NTT is fast polynomial multiplication:
+
+```cpp
+// Multiply two polynomials: c = a * b in R_q
+void poly_mul(LatticeNTTContext* ctx,
+              const uint64_t* a,
+              const uint64_t* b,
+              uint64_t* c,
+              size_t n) {
+    // Copy inputs (NTT is in-place)
+    uint64_t* a_ntt = copy_poly(a, n);
+    uint64_t* b_ntt = copy_poly(b, n);
+
+    // Forward NTT on both
+    lattice_ntt_forward(ctx, a_ntt);
+    lattice_ntt_forward(ctx, b_ntt);
+
+    // Element-wise multiplication
+    lattice_poly_mul_pointwise(ctx, c, a_ntt, b_ntt);
+
+    // Inverse NTT to get result
+    lattice_ntt_inverse(ctx, c);
+
+    free(a_ntt);
+    free(b_ntt);
+}
+```
+
+### Batch Operations
+
+For processing multiple polynomials, batch operations are more efficient:
+
+```cpp
+// Batch NTT for multiple polynomials
+int lattice_ntt_batch_forward(
+    LatticeNTTContext* ctx,
+    uint64_t* polys,      // Array of polynomials (contiguous)
+    size_t count          // Number of polynomials
+);
+```
+
+### Go API
+
+```go
+import "github.com/luxfi/lattice"
+
+ring, _ := lattice.NewRing(1024, []uint64{0x7ffe0001})
+
+// Create polynomials
+a := ring.NewPoly()
+b := ring.NewPoly()
+c := ring.NewPoly()
+
+// Sample random polynomials
+ring.SampleUniform(a)
+ring.SampleUniform(b)
+
+// NTT-domain multiplication
+ring.NTT(a)
+ring.NTT(b)
+ring.MulCoeffsMontgomery(a, b, c)
+ring.InverseNTT(c)
+
+// c now contains a * b in R_q
+```
+
+## GPU Acceleration
+
+The NTT is highly parallelizable and benefits significantly from GPU acceleration. lux-lattice automatically dispatches to GPU when available:
+
+### Metal (Apple Silicon)
+
+```cpp
+// Automatically uses Metal on macOS/iOS
+LatticeNTTContext* ctx;
+lattice_ntt_create(&ctx, 4096, prime);  // Will use Metal if available
+
+// Check if using GPU
+if (lattice_ntt_is_gpu_accelerated(ctx)) {
+    printf("Using Metal GPU\n");
+}
+```
+
+### CUDA (NVIDIA)
+
+```cpp
+// Build with CUDA support
+// cmake -DLATTICE_BUILD_CUDA=ON ..
+
+LatticeNTTContext* ctx;
+lattice_ntt_create(&ctx, 4096, prime);  // Will use CUDA if available
+```
+
+## Performance Considerations
+
+### Prime Selection
+
+Choose primes q such that:
+- q ≡ 1 (mod 2n) for primitive 2n-th roots of unity
+- q fits in 60-62 bits for efficient Montgomery multiplication
+
+Common NTT-friendly primes:
+```cpp
+// 60-bit primes with good NTT properties
+0x7ffe0001ULL      // n ≤ 1024
+0xfff00001ULL      // n ≤ 2048
+0x3fffffffffc0001ULL  // n ≤ 65536
+```
+
+### Memory Layout
+
+For optimal cache/GPU performance:
+- Align polynomials to 64 bytes
+- Use contiguous memory for batch operations
+- Consider Montgomery form for repeated multiplications
+
+### Twiddle Factor Precomputation
+
+The NTT context precomputes and caches:
+- Forward twiddle factors (ω^i)
+- Inverse twiddle factors (ω^(-i))
+- Montgomery-form twiddles for GPU kernels
+- n^(-1) mod q for inverse scaling
+
+## Error Handling
+
+```cpp
+int result = lattice_ntt_create(&ctx, n, q);
+switch (result) {
+    case LATTICE_SUCCESS:
+        // OK
+        break;
+    case LATTICE_ERROR_INVALID_N:
+        // n is not a power of 2 or too large
+        break;
+    case LATTICE_ERROR_INVALID_PRIME:
+        // q is not prime or q ≢ 1 (mod 2n)
+        break;
+    case LATTICE_ERROR_OUT_OF_MEMORY:
+        // Allocation failed
+        break;
+}
+```
+
+## Related Topics
+
+- [Polynomial Rings](/docs/concepts/ring) - Ring structure and operations
+- [Montgomery Arithmetic](/docs/concepts/montgomery) - Efficient modular multiplication
+- [Metal Backend](/docs/backends/metal) - Apple GPU implementation
+- [CUDA Backend](/docs/backends/cuda) - NVIDIA GPU implementation

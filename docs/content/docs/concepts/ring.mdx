@@ -1,0 +1,333 @@
+---
+title: Polynomial Rings
+description: "Polynomial ring arithmetic in R_q = Z_q[X]/(X^n + 1)"
+---
+
+# Polynomial Rings
+
+Lattice-based cryptography operates over polynomial rings of the form `R_q = Z_q[X]/(X^n + 1)`. This page covers the mathematical foundations and practical implementation of ring operations.
+
+## Ring Structure
+
+### Definition
+
+The polynomial ring R_q is defined as:
+
+```
+R_q = Z_q[X]/(X^n + 1)
+```
+
+Where:
+- Z_q is the integers modulo q
+- X is an indeterminate
+- n is a power of 2 (ring dimension)
+- `X^n + 1` is the cyclotomic polynomial (irreducible for `n = 2^k`)
+
+Elements of R_q are polynomials of degree less than n with coefficients in `{0, 1, ..., q-1}`.
+
+### Ring Properties
+
+- **Dimension**: n (power of 2)
+- **Modulus**: q (typically prime)
+- **Addition**: Coefficient-wise mod q
+- **Multiplication**: Polynomial multiplication mod `X^n + 1`
+
+The quotient by `X^n + 1` means:
+```
+X^n ≡ -1 (mod X^n + 1)
+```
+
+This gives **negacyclic** polynomial multiplication.
+
+## Ring Creation
+
+### C API
+
+```cpp
+#include <lux/lattice/lattice.h>
+
+// Create ring context
+LatticeRingContext* ring;
+uint64_t moduli[] = {0x7ffe0001ULL};  // Single modulus
+int err = lattice_ring_create(&ring, 1024, moduli, 1);
+
+// For RNS (multiple moduli)
+uint64_t rns_moduli[] = {
+    0x7ffe0001ULL,
+    0xfff00001ULL,
+    0x1fff8001ULL
+};
+err = lattice_ring_create(&ring, 1024, rns_moduli, 3);
+```
+
+### Go API
+
+```go
+import "github.com/luxfi/lattice"
+
+// Single modulus
+ring, err := lattice.NewRing(1024, []uint64{0x7ffe0001})
+
+// RNS representation (multiple moduli)
+ring, err := lattice.NewRing(1024, []uint64{
+    0x7ffe0001,
+    0xfff00001,
+    0x1fff8001,
+})
+```
+
+## Polynomial Representation
+
+A polynomial in R_q is stored as an array of n coefficients:
+
+```cpp
+// Polynomial a(X) = a_0 + a_1·X + a_2·X² + ... + a_{n-1}·X^{n-1}
+typedef struct {
+    uint64_t* coeffs;  // Array of n coefficients
+    size_t n;          // Ring dimension
+    size_t level;      // RNS level (for multi-modulus)
+} LatticePoly;
+```
+
+### Go Representation
+
+```go
+type Poly struct {
+    Coeffs [][]uint64  // [level][n] coefficients for RNS
+    ring   *Ring       // Parent ring
+}
+```
+
+## Basic Operations
+
+### Addition and Subtraction
+
+```cpp
+// C: c = a + b
+lattice_poly_add(ring, c, a, b);
+
+// C: c = a - b
+lattice_poly_sub(ring, c, a, b);
+
+// C: a = -a (negation)
+lattice_poly_neg(ring, a);
+```
+
+```go
+// Go equivalents
+ring.Add(a, b, c)  // c = a + b
+ring.Sub(a, b, c)  // c = a - b
+ring.Neg(a, a)     // a = -a
+```
+
+### Scalar Multiplication
+
+```cpp
+// C: c = a * scalar
+lattice_poly_mul_scalar(ring, c, a, scalar);
+```
+
+```go
+// Go
+ring.MulScalar(a, scalar, c)
+```
+
+### Polynomial Multiplication
+
+The core operation uses NTT for efficiency:
+
+```cpp
+// c = a * b in R_q (uses NTT internally)
+lattice_poly_mul(ring, c, a, b);
+
+// Manual NTT-based multiplication
+lattice_ntt_forward(ntt_ctx, a);
+lattice_ntt_forward(ntt_ctx, b);
+lattice_poly_mul_pointwise(ring, c, a, b);
+lattice_ntt_inverse(ntt_ctx, c);
+```
+
+```go
+// NTT-domain multiplication (more efficient for repeated ops)
+ring.NTT(a)
+ring.NTT(b)
+ring.MulCoeffsMontgomery(a, b, c)
+ring.InverseNTT(c)
+
+// Or direct multiplication
+ring.MulPoly(a, b, c)
+```
+
+## NTT Domain Operations
+
+For efficiency, polynomials can be kept in NTT domain:
+
+```go
+// Convert to NTT domain once
+ring.NTT(a)
+ring.NTT(b)
+
+// Multiple multiplications are now cheap
+ring.MulCoeffsMontgomery(a, b, c1)
+ring.MulCoeffsMontgomery(a, d, c2)
+ring.MulCoeffsMontgomery(b, e, c3)
+
+// Convert back when needed
+ring.InverseNTT(c1)
+```
+
+### Montgomery Form
+
+For NTT-domain multiplication, coefficients can be in Montgomery form:
+
+```go
+// Convert to Montgomery form
+ring.NTTMontgomery(a)
+
+// Multiply in Montgomery domain
+ring.MulCoeffsMontgomery(a, b, c)
+
+// Convert back
+ring.InverseNTTMontgomery(c)
+```
+
+## RNS (Residue Number System)
+
+For large coefficient moduli, use RNS representation:
+
+```go
+// Ring with RNS moduli
+ring, _ := lattice.NewRing(2048, []uint64{
+    0x7ffe0001,    // q_0
+    0xfff00001,    // q_1
+    0x1fff8001,    // q_2
+})
+
+// Polynomial has multiple levels
+poly := ring.NewPoly()
+// poly.Coeffs[0] - coefficients mod q_0
+// poly.Coeffs[1] - coefficients mod q_1
+// poly.Coeffs[2] - coefficients mod q_2
+```
+
+### RNS Operations
+
+```go
+// All operations work across RNS levels
+ring.Add(a, b, c)      // Adds at each level
+ring.MulPoly(a, b, c)  // Multiplies at each level
+
+// Rescaling (drop a level)
+ring.Rescale(poly, targetLevel)
+
+// Modulus switching
+ring.ModSwitch(poly, newModuli)
+```
+
+## Automorphisms
+
+Ring automorphisms are crucial for key switching and rotations:
+
+```go
+// Frobenius automorphism: a(X) -> a(X^k)
+ring.Automorphism(a, k, result)
+
+// Conjugation: a(X) -> a(X^{-1})
+ring.Conjugate(a, result)
+
+// Galois elements for specific rotations
+galoisElt := ring.GaloisElement(rotation)
+ring.Automorphism(a, galoisElt, result)
+```
+
+```cpp
+// C API
+lattice_poly_automorphism(ring, result, a, k);
+lattice_poly_conjugate(ring, result, a);
+```
+
+## Memory Management
+
+### C
+
+```cpp
+// Allocate polynomial
+LatticePoly* poly = lattice_poly_alloc(ring);
+
+// Initialize to zero
+lattice_poly_zero(poly);
+
+// Copy
+lattice_poly_copy(dst, src);
+
+// Free
+lattice_poly_free(poly);
+```
+
+### Go
+
+```go
+// Polynomials are managed by Go's GC
+poly := ring.NewPoly()  // Automatically freed
+
+// Explicit copy if needed
+copy := ring.NewPoly()
+ring.Copy(poly, copy)
+```
+
+## Coefficient Access
+
+```cpp
+// C: Direct coefficient access
+uint64_t coeff = lattice_poly_get_coeff(poly, index, level);
+lattice_poly_set_coeff(poly, index, level, value);
+```
+
+```go
+// Go: Direct slice access
+coeff := poly.Coeffs[level][index]
+poly.Coeffs[level][index] = value
+```
+
+## Serialization
+
+```go
+// Serialize polynomial
+data, err := poly.MarshalBinary()
+
+// Deserialize
+newPoly := ring.NewPoly()
+err = newPoly.UnmarshalBinary(data)
+```
+
+## Performance Tips
+
+1. **Keep in NTT Domain**: Minimize NTT/InverseNTT calls by batching operations
+2. **Use Montgomery Form**: For repeated multiplications
+3. **Align Memory**: 64-byte alignment for SIMD/GPU efficiency
+4. **Batch Operations**: Process multiple polynomials together for GPU acceleration
+
+```go
+// Bad: Repeated domain conversions
+for i := 0; i < 100; i++ {
+    ring.MulPoly(a[i], b[i], c[i])  // Each does NTT + mul + InverseNTT
+}
+
+// Good: Batch in NTT domain
+for i := 0; i < 100; i++ {
+    ring.NTT(a[i])
+    ring.NTT(b[i])
+}
+for i := 0; i < 100; i++ {
+    ring.MulCoeffsMontgomery(a[i], b[i], c[i])
+}
+for i := 0; i < 100; i++ {
+    ring.InverseNTT(c[i])
+}
+```
+
+## Related Topics
+
+- [NTT Operations](/docs/concepts/ntt) - Fast polynomial multiplication
+- [Montgomery Arithmetic](/docs/concepts/montgomery) - Efficient modular arithmetic
+- [Sampling](/docs/concepts/sampling) - Generating ring elements

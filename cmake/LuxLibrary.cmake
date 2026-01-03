@@ -7,6 +7,7 @@
 #   - Install layout: include/lux/<pkg>/, lib/, lib/cmake/<pkg>/, lib/pkgconfig/
 #   - Naming: CMake=lux-<pkg>, Target=lux::<pkg>, Library=liblux<pkg>.{dylib,so}
 #   - Relocatable: @rpath on macOS, $ORIGIN on Linux
+#   - Default install prefix: /usr/local (ALL platforms)
 #   - No absolute paths in installed files
 #
 # Usage:
@@ -22,6 +23,13 @@
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
+
+# ========================= DEFAULT /usr/local =========================
+# Standard Unix convention: /usr/local for locally compiled software
+# This applies to ALL platforms (macOS, Linux, BSD, etc.)
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+  set(CMAKE_INSTALL_PREFIX "/usr/local" CACHE PATH "Installation prefix" FORCE)
+endif()
 
 # Standard compile flags for all Lux libraries
 set(LUX_CXX_STANDARD 17)
@@ -73,18 +81,24 @@ function(lux_add_library)
     EXPORT_NAME ${LUX_NAME}  # Export as just the short name under lux::
   )
 
-  # Relocatable RPATH settings
+  # Relocatable RPATH settings - enables "just works" linking from /usr/local
+  # Universal settings for ALL platforms (macOS, Linux, BSD, etc.)
+  set_target_properties(${INTERNAL_TARGET} PROPERTIES
+    BUILD_WITH_INSTALL_RPATH ON
+    INSTALL_RPATH_USE_LINK_PATH ON
+  )
+
   if(APPLE)
+    # macOS: @rpath + @loader_path for relocatable binaries
     set_target_properties(${INTERNAL_TARGET} PROPERTIES
+      MACOSX_RPATH ON
       INSTALL_NAME_DIR "@rpath"
-      INSTALL_RPATH "@loader_path"
-      BUILD_WITH_INSTALL_RPATH OFF
-      BUILD_RPATH "${CMAKE_BINARY_DIR}"
+      INSTALL_RPATH "@loader_path;@loader_path/../lib;${CMAKE_INSTALL_PREFIX}/lib"
     )
   else()
+    # Linux/BSD: $ORIGIN for relocatable + explicit /usr/local/lib
     set_target_properties(${INTERNAL_TARGET} PROPERTIES
-      INSTALL_RPATH "$ORIGIN"
-      BUILD_WITH_INSTALL_RPATH OFF
+      INSTALL_RPATH "$ORIGIN;$ORIGIN/../lib;${CMAKE_INSTALL_PREFIX}/lib"
     )
   endif()
 

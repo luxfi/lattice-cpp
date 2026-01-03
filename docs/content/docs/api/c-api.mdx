@@ -1,0 +1,493 @@
+---
+title: C API Reference
+description: Complete C API documentation for lux-lattice
+---
+
+# C API Reference
+
+The lux-lattice C API provides low-level access to all lattice cryptography operations. Include `<lux/lattice/lattice.h>` to use.
+
+## Error Codes
+
+```cpp
+// Success
+#define LATTICE_SUCCESS              0
+
+// Invalid parameters
+#define LATTICE_ERROR_INVALID_N      -1  // n is not power of 2
+#define LATTICE_ERROR_INVALID_PRIME  -2  // q is not prime or invalid
+#define LATTICE_ERROR_INVALID_PARAM  -3  // Generic invalid parameter
+#define LATTICE_ERROR_NULL_POINTER   -4  // NULL pointer passed
+
+// Resource errors
+#define LATTICE_ERROR_OUT_OF_MEMORY  -10
+#define LATTICE_ERROR_GPU_UNAVAILABLE -11
+#define LATTICE_ERROR_GPU_INIT       -12
+
+// Operation errors
+#define LATTICE_ERROR_OVERFLOW       -20
+#define LATTICE_ERROR_UNDERFLOW      -21
+```
+
+## NTT Context
+
+### lattice_ntt_create
+
+Create an NTT context for a given dimension and modulus.
+
+```cpp
+int lattice_ntt_create(
+    LatticeNTTContext** ctx,  // Output: context pointer
+    size_t n,                  // Ring dimension (power of 2)
+    uint64_t q                 // Prime modulus (q ≡ 1 mod 2n)
+);
+```
+
+**Returns**: `LATTICE_SUCCESS` on success, error code otherwise.
+
+**Example**:
+```cpp
+LatticeNTTContext* ctx;
+int err = lattice_ntt_create(&ctx, 1024, 0x7ffe0001ULL);
+if (err != LATTICE_SUCCESS) {
+    fprintf(stderr, "Failed to create NTT context: %d\n", err);
+    return;
+}
+```
+
+### lattice_ntt_destroy
+
+Free an NTT context and all associated resources.
+
+```cpp
+void lattice_ntt_destroy(LatticeNTTContext* ctx);
+```
+
+### lattice_ntt_forward
+
+Perform forward NTT (coefficient to evaluation representation).
+
+```cpp
+int lattice_ntt_forward(
+    LatticeNTTContext* ctx,
+    uint64_t* poly              // In-place transformation
+);
+```
+
+### lattice_ntt_inverse
+
+Perform inverse NTT (evaluation to coefficient representation).
+
+```cpp
+int lattice_ntt_inverse(
+    LatticeNTTContext* ctx,
+    uint64_t* poly              // In-place transformation
+);
+```
+
+### lattice_ntt_batch_forward
+
+Perform forward NTT on multiple polynomials (GPU-optimized).
+
+```cpp
+int lattice_ntt_batch_forward(
+    LatticeNTTContext* ctx,
+    uint64_t* polys,            // Contiguous array of polynomials
+    size_t count                // Number of polynomials
+);
+```
+
+### lattice_ntt_batch_inverse
+
+Perform inverse NTT on multiple polynomials.
+
+```cpp
+int lattice_ntt_batch_inverse(
+    LatticeNTTContext* ctx,
+    uint64_t* polys,
+    size_t count
+);
+```
+
+### lattice_ntt_is_gpu_accelerated
+
+Check if the context uses GPU acceleration.
+
+```cpp
+int lattice_ntt_is_gpu_accelerated(LatticeNTTContext* ctx);
+```
+
+**Returns**: 1 if GPU-accelerated, 0 otherwise.
+
+## Polynomial Operations
+
+### lattice_poly_mul_pointwise
+
+Element-wise multiplication of two NTT-domain polynomials.
+
+```cpp
+int lattice_poly_mul_pointwise(
+    LatticeNTTContext* ctx,
+    uint64_t* result,           // Output polynomial
+    const uint64_t* a,          // Input polynomial (NTT domain)
+    const uint64_t* b           // Input polynomial (NTT domain)
+);
+```
+
+### lattice_poly_add
+
+Add two polynomials.
+
+```cpp
+int lattice_poly_add(
+    LatticeNTTContext* ctx,
+    uint64_t* result,
+    const uint64_t* a,
+    const uint64_t* b
+);
+```
+
+### lattice_poly_sub
+
+Subtract two polynomials.
+
+```cpp
+int lattice_poly_sub(
+    LatticeNTTContext* ctx,
+    uint64_t* result,
+    const uint64_t* a,
+    const uint64_t* b
+);
+```
+
+### lattice_poly_neg
+
+Negate a polynomial.
+
+```cpp
+int lattice_poly_neg(
+    LatticeNTTContext* ctx,
+    uint64_t* poly              // In-place negation
+);
+```
+
+### lattice_poly_mul_scalar
+
+Multiply polynomial by a scalar.
+
+```cpp
+int lattice_poly_mul_scalar(
+    LatticeNTTContext* ctx,
+    uint64_t* result,
+    const uint64_t* poly,
+    uint64_t scalar
+);
+```
+
+### lattice_poly_mul
+
+Full polynomial multiplication (NTT + pointwise + InverseNTT).
+
+```cpp
+int lattice_poly_mul(
+    LatticeNTTContext* ctx,
+    uint64_t* result,
+    const uint64_t* a,
+    const uint64_t* b
+);
+```
+
+## Sampling Functions
+
+### lattice_sample_uniform
+
+Sample polynomial with uniform random coefficients.
+
+```cpp
+int lattice_sample_uniform(
+    LatticeNTTContext* ctx,
+    uint64_t* poly,
+    LatticePRNG* prng
+);
+```
+
+### lattice_sample_gaussian
+
+Sample polynomial with discrete Gaussian coefficients.
+
+```cpp
+int lattice_sample_gaussian(
+    LatticeNTTContext* ctx,
+    uint64_t* poly,
+    double sigma,               // Standard deviation
+    LatticePRNG* prng
+);
+```
+
+### lattice_sample_ternary
+
+Sample ternary polynomial {-1, 0, 1} with given Hamming weight.
+
+```cpp
+int lattice_sample_ternary(
+    LatticeNTTContext* ctx,
+    uint64_t* poly,
+    size_t hamming_weight,      // Number of non-zero coefficients
+    LatticePRNG* prng
+);
+```
+
+### lattice_sample_binary
+
+Sample binary polynomial {0, 1}.
+
+```cpp
+int lattice_sample_binary(
+    LatticeNTTContext* ctx,
+    uint64_t* poly,
+    LatticePRNG* prng
+);
+```
+
+### lattice_sample_cbd
+
+Sample using centered binomial distribution.
+
+```cpp
+int lattice_sample_cbd(
+    LatticeNTTContext* ctx,
+    uint64_t* poly,
+    int eta,                    // CBD parameter
+    LatticePRNG* prng
+);
+```
+
+## PRNG Functions
+
+### lattice_prng_system
+
+Get system CSPRNG.
+
+```cpp
+LatticePRNG* lattice_prng_system(void);
+```
+
+### lattice_prng_create_chacha
+
+Create deterministic ChaCha20-based PRNG.
+
+```cpp
+LatticePRNG* lattice_prng_create_chacha(
+    const uint8_t seed[32]
+);
+```
+
+### lattice_prng_destroy
+
+Free PRNG resources.
+
+```cpp
+void lattice_prng_destroy(LatticePRNG* prng);
+```
+
+### lattice_prng_random_bytes
+
+Generate random bytes.
+
+```cpp
+int lattice_prng_random_bytes(
+    LatticePRNG* prng,
+    uint8_t* buffer,
+    size_t length
+);
+```
+
+## Utility Functions
+
+### lattice_get_version
+
+Get library version.
+
+```cpp
+const char* lattice_get_version(void);
+```
+
+### lattice_get_n
+
+Get ring dimension from context.
+
+```cpp
+size_t lattice_get_n(LatticeNTTContext* ctx);
+```
+
+### lattice_get_q
+
+Get modulus from context.
+
+```cpp
+uint64_t lattice_get_q(LatticeNTTContext* ctx);
+```
+
+### lattice_poly_alloc
+
+Allocate aligned polynomial memory.
+
+```cpp
+uint64_t* lattice_poly_alloc(LatticeNTTContext* ctx);
+```
+
+### lattice_poly_free
+
+Free polynomial memory.
+
+```cpp
+void lattice_poly_free(uint64_t* poly);
+```
+
+### lattice_poly_copy
+
+Copy polynomial data.
+
+```cpp
+void lattice_poly_copy(
+    uint64_t* dst,
+    const uint64_t* src,
+    size_t n
+);
+```
+
+### lattice_poly_zero
+
+Set polynomial to zero.
+
+```cpp
+void lattice_poly_zero(uint64_t* poly, size_t n);
+```
+
+## Ring Context (Multi-Modulus)
+
+### lattice_ring_create
+
+Create ring context with multiple moduli (RNS).
+
+```cpp
+int lattice_ring_create(
+    LatticeRingContext** ctx,
+    size_t n,
+    const uint64_t* moduli,
+    size_t num_moduli
+);
+```
+
+### lattice_ring_destroy
+
+Free ring context.
+
+```cpp
+void lattice_ring_destroy(LatticeRingContext* ctx);
+```
+
+## Backend Control
+
+### lattice_set_backend
+
+Force a specific compute backend.
+
+```cpp
+typedef enum {
+    LATTICE_BACKEND_AUTO = 0,
+    LATTICE_BACKEND_CPU = 1,
+    LATTICE_BACKEND_METAL = 2,
+    LATTICE_BACKEND_CUDA = 3
+} LatticeBackend;
+
+int lattice_set_backend(LatticeBackend backend);
+```
+
+### lattice_get_backend
+
+Get current backend.
+
+```cpp
+LatticeBackend lattice_get_backend(void);
+```
+
+### lattice_backend_name
+
+Get backend name string.
+
+```cpp
+const char* lattice_backend_name(LatticeBackend backend);
+```
+
+## Thread Safety
+
+All functions are thread-safe with the following caveats:
+- Different threads should use different contexts or synchronize access
+- PRNG objects should not be shared across threads without synchronization
+- Global backend setting affects all threads
+
+```cpp
+// Safe: different contexts
+void thread1() {
+    LatticeNTTContext* ctx1;
+    lattice_ntt_create(&ctx1, 1024, q);
+    // Use ctx1...
+}
+
+void thread2() {
+    LatticeNTTContext* ctx2;
+    lattice_ntt_create(&ctx2, 1024, q);
+    // Use ctx2...
+}
+
+// Unsafe: shared context without mutex
+void unsafe_thread() {
+    // Don't share ctx between threads without locking!
+    lattice_ntt_forward(shared_ctx, poly);
+}
+```
+
+## Complete Example
+
+```cpp
+#include <stdio.h>
+#include <stdlib.h>
+#include <lux/lattice/lattice.h>
+
+int main() {
+    // Create NTT context
+    LatticeNTTContext* ctx;
+    int err = lattice_ntt_create(&ctx, 1024, 0x7ffe0001ULL);
+    if (err != LATTICE_SUCCESS) {
+        fprintf(stderr, "Error: %d\n", err);
+        return 1;
+    }
+
+    printf("Using backend: %s\n",
+           lattice_ntt_is_gpu_accelerated(ctx) ? "GPU" : "CPU");
+
+    // Allocate polynomials
+    uint64_t* a = lattice_poly_alloc(ctx);
+    uint64_t* b = lattice_poly_alloc(ctx);
+    uint64_t* c = lattice_poly_alloc(ctx);
+
+    // Sample random polynomials
+    LatticePRNG* prng = lattice_prng_system();
+    lattice_sample_uniform(ctx, a, prng);
+    lattice_sample_uniform(ctx, b, prng);
+
+    // Multiply: c = a * b
+    lattice_poly_mul(ctx, c, a, b);
+
+    printf("Polynomial multiplication complete\n");
+
+    // Cleanup
+    lattice_poly_free(a);
+    lattice_poly_free(b);
+    lattice_poly_free(c);
+    lattice_ntt_destroy(ctx);
+
+    return 0;
+}
+```

@@ -1,0 +1,243 @@
+---
+title: Montgomery Arithmetic
+description: Efficient modular multiplication using Montgomery reduction
+---
+
+# Montgomery Arithmetic
+
+Montgomery multiplication is a technique for efficient modular arithmetic, essential for high-performance NTT and polynomial operations.
+
+## Overview
+
+Standard modular multiplication requires division:
+```
+c = (a * b) mod q
+```
+
+Division is expensive. Montgomery multiplication replaces division with shifts and additions by transforming numbers into "Montgomery form".
+
+## Montgomery Form
+
+Given modulus q and R = 2^64 (for 64-bit arithmetic), the Montgomery form of a is:
+
+```
+ā = a * R mod q
+```
+
+### Properties
+
+- Addition: ā + b̄ = (a + b) in Montgomery form
+- Multiplication: MontMul(ā, b̄) = (a * b) in Montgomery form
+
+## Montgomery Reduction
+
+The REDC algorithm converts a product back to Montgomery form:
+
+```cpp
+// Montgomery reduction: computes (T * R^{-1}) mod q
+uint64_t mont_redc(uint128_t T, uint64_t q, uint64_t q_inv) {
+    // q_inv = -q^{-1} mod R
+    uint64_t m = (uint64_t)T * q_inv;        // m = T * (-q^{-1}) mod R
+    uint128_t t = T + (uint128_t)m * q;      // t = T + m*q
+    uint64_t result = t >> 64;                // result = t / R
+
+    // Conditional subtraction if result >= q
+    if (result >= q) {
+        result -= q;
+    }
+    return result;
+}
+```
+
+## Montgomery Multiplication
+
+```cpp
+// Multiply two numbers in Montgomery form
+uint64_t mont_mul(uint64_t a, uint64_t b, uint64_t q, uint64_t q_inv) {
+    uint128_t product = (uint128_t)a * b;
+    return mont_redc(product, q, q_inv);
+}
+```
+
+### Optimized Implementation
+
+```cpp
+// Using Barrett reduction for small moduli
+uint64_t mont_mul_barrett(uint64_t a, uint64_t b,
+                          uint64_t q, uint64_t mu) {
+    uint128_t ab = (uint128_t)a * b;
+    uint64_t q1 = (ab * mu) >> 64;
+    uint64_t r = (uint64_t)ab - q1 * q;
+    return r >= q ? r - q : r;
+}
+```
+
+## Integration with NTT
+
+The NTT uses Montgomery form for efficient twiddle factor multiplication:
+
+```cpp
+// NTT butterfly with Montgomery multiplication
+void ct_butterfly_mont(uint64_t* a, uint64_t* b,
+                       uint64_t w, uint64_t q, uint64_t q_inv) {
+    // w is in Montgomery form
+    uint64_t t = mont_mul(*b, w, q, q_inv);
+    *b = sub_mod(*a, t, q);
+    *a = add_mod(*a, t, q);
+}
+```
+
+### Precomputed Twiddles
+
+```cpp
+// Precompute twiddle factors in Montgomery form
+void precompute_twiddles_mont(uint64_t* twiddles, size_t n,
+                              uint64_t omega, uint64_t q, uint64_t R_mod_q) {
+    uint64_t w = R_mod_q;  // ω^0 * R mod q = R mod q
+    for (size_t i = 0; i < n; i++) {
+        twiddles[i] = w;
+        w = mont_mul(w, omega, q, q_inv);
+    }
+}
+```
+
+## Go Implementation
+
+```go
+// Ring with Montgomery parameters
+type Ring struct {
+    N      int
+    Q      []uint64
+    QInv   []uint64    // -Q^{-1} mod 2^64
+    R2ModQ []uint64    // R^2 mod Q (for conversion to Montgomery)
+}
+
+// Convert to Montgomery form
+func (r *Ring) ToMontgomery(poly *Poly) {
+    for level := range poly.Coeffs {
+        r2 := r.R2ModQ[level]
+        q := r.Q[level]
+        qInv := r.QInv[level]
+        for i := range poly.Coeffs[level] {
+            // a * R^2 * R^{-1} = a * R
+            poly.Coeffs[level][i] = MontMul(poly.Coeffs[level][i], r2, q, qInv)
+        }
+    }
+}
+
+// Convert from Montgomery form
+func (r *Ring) FromMontgomery(poly *Poly) {
+    for level := range poly.Coeffs {
+        q := r.Q[level]
+        qInv := r.QInv[level]
+        for i := range poly.Coeffs[level] {
+            // a * 1 * R^{-1} = a * R^{-1}
+            poly.Coeffs[level][i] = MontMul(poly.Coeffs[level][i], 1, q, qInv)
+        }
+    }
+}
+```
+
+### NTT with Montgomery
+
+```go
+// NTT that outputs in Montgomery form
+func (r *Ring) NTTMontgomery(poly *Poly) {
+    for level := range poly.Coeffs {
+        r.nttMontLevel(poly.Coeffs[level], level)
+    }
+}
+
+// Multiply coefficients in Montgomery form
+func (r *Ring) MulCoeffsMontgomery(a, b, c *Poly) {
+    for level := range c.Coeffs {
+        q := r.Q[level]
+        qInv := r.QInv[level]
+        for i := range c.Coeffs[level] {
+            c.Coeffs[level][i] = MontMul(
+                a.Coeffs[level][i],
+                b.Coeffs[level][i],
+                q, qInv)
+        }
+    }
+}
+```
+
+## Parameter Computation
+
+### Computing q^{-1} mod R
+
+```go
+// Compute -q^{-1} mod 2^64 using extended Euclidean algorithm
+func ComputeQInv(q uint64) uint64 {
+    // Newton's method: x = x * (2 - q * x) mod 2^64
+    var qInv uint64 = 1
+    for i := 0; i < 63; i++ {
+        qInv *= 2 - q*qInv
+    }
+    return -qInv  // Return -q^{-1}
+}
+```
+
+### Computing R^2 mod q
+
+```go
+// Compute R^2 mod q for conversion to Montgomery form
+func ComputeR2ModQ(q uint64) uint64 {
+    // R = 2^64, compute R mod q first
+    var r uint64 = (^uint64(0)) % q + 1  // 2^64 mod q
+    // Then R^2 mod q
+    return MulMod(r, r, q)
+}
+```
+
+## Performance Comparison
+
+| Operation | Standard | Montgomery |
+|-----------|----------|------------|
+| Modular Mul | ~40 cycles | ~10 cycles |
+| NTT (n=1024) | ~100μs | ~25μs |
+| Poly Mul | ~400μs | ~100μs |
+
+Montgomery form gives 3-4x speedup for multiplication-heavy operations.
+
+## When to Use
+
+### Use Montgomery Form When:
+- Performing many multiplications on the same modulus
+- NTT operations (twiddle factors precomputed in Montgomery form)
+- Polynomial multiplication chains
+
+### Avoid When:
+- Only a few multiplications needed
+- Different moduli frequently (conversion overhead)
+- Addition-only operations (no benefit)
+
+## GPU Considerations
+
+On GPU, Montgomery reduction maps well to parallel execution:
+
+```cpp
+// Metal kernel for Montgomery multiplication
+kernel void mont_mul_kernel(
+    device const uint64_t* a,
+    device const uint64_t* b,
+    device uint64_t* c,
+    constant uint64_t& q,
+    constant uint64_t& q_inv,
+    uint id [[thread_position_in_grid]]
+) {
+    // Each thread handles one coefficient
+    uint128_t product = (uint128_t)a[id] * b[id];
+    uint64_t m = (uint64_t)product * q_inv;
+    uint128_t t = product + (uint128_t)m * q;
+    uint64_t result = t >> 64;
+    c[id] = result >= q ? result - q : result;
+}
+```
+
+## Related Topics
+
+- [NTT Operations](/docs/concepts/ntt) - Number Theoretic Transform
+- [Polynomial Rings](/docs/concepts/ring) - Ring arithmetic
+- [Metal Backend](/docs/backends/metal) - GPU implementation details

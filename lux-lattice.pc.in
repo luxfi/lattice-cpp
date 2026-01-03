@@ -7,7 +7,7 @@ resourcedir=${prefix}/@CMAKE_INSTALL_DATADIR@/lux/lattice
 Name: lux-lattice
 Description: Lux Lattice Library - GPU-Accelerated Lattice Cryptography
 Version: @PROJECT_VERSION@
-Requires:
-Libs: -L${libdir} -lluxlattice
+Requires: lux-gpu
+Libs: -L${libdir} -Wl,-rpath,${libdir} -lluxlattice
 Libs.private: @PKG_CONFIG_PRIVATE_LIBS@
 Cflags: -I${includedir}

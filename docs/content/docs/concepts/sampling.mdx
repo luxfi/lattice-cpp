@@ -1,0 +1,291 @@
+---
+title: Cryptographic Sampling
+description: Discrete Gaussian, uniform, and ternary sampling for lattice cryptography
+---
+
+# Cryptographic Sampling
+
+Secure sampling of ring elements is fundamental to lattice-based cryptography. lux-lattice provides several sampling algorithms with different security/performance trade-offs.
+
+## Sampling Methods
+
+### Uniform Sampling
+
+Samples coefficients uniformly at random from Z_q:
+
+```cpp
+// C: Sample uniform polynomial
+lattice_sample_uniform(ring, poly, prng);
+```
+
+```go
+// Go: Sample uniform
+ring.SampleUniform(poly)
+
+// With custom source
+ring.SampleUniformFrom(poly, rand.Reader)
+```
+
+**Security**: Information-theoretically uniform
+**Use Case**: Generating random polynomials for encryption
+
+### Discrete Gaussian Sampling
+
+Samples from a discrete Gaussian distribution centered at 0 with standard deviation σ:
+
+```cpp
+// C: Sample discrete Gaussian
+lattice_sample_gaussian(ring, poly, sigma, prng);
+
+// With bounds checking (faster, slight bias)
+lattice_sample_gaussian_bounded(ring, poly, sigma, bound, prng);
+```
+
+```go
+// Go: Sample Gaussian with σ = 3.19
+ring.SampleGaussian(poly, 3.19)
+
+// Constant-time variant (slower, no timing leaks)
+ring.SampleGaussianCT(poly, 3.19)
+```
+
+**Security**: Required for Ring-LWE security proofs
+**Use Case**: Error terms in LWE/RLWE encryption
+
+### Ternary Sampling
+
+Samples coefficients from {-1, 0, 1}:
+
+```cpp
+// C: Sample ternary (Hamming weight h)
+lattice_sample_ternary(ring, poly, hamming_weight, prng);
+
+// Uniform ternary
+lattice_sample_ternary_uniform(ring, poly, prng);
+```
+
+```go
+// Go: Ternary with specific Hamming weight
+ring.SampleTernary(poly, hammingWeight)
+
+// Uniform ternary (roughly 1/3 each of -1, 0, 1)
+ring.SampleTernaryUniform(poly)
+```
+
+**Security**: Smaller noise, faster operations
+**Use Case**: Secret keys, NTRU-style schemes
+
+### Binary Sampling
+
+Samples coefficients from {0, 1}:
+
+```cpp
+// C: Sample binary
+lattice_sample_binary(ring, poly, prng);
+
+// With specific Hamming weight
+lattice_sample_binary_hw(ring, poly, hamming_weight, prng);
+```
+
+```go
+ring.SampleBinary(poly)
+ring.SampleBinaryHW(poly, hammingWeight)
+```
+
+**Use Case**: Plaintext encoding, masks
+
+### Centered Binomial Sampling
+
+Fast alternative to Gaussian, used in Kyber/ML-KEM:
+
+```cpp
+// Sample CBD with parameter η
+lattice_sample_cbd(ring, poly, eta, prng);
+```
+
+```go
+// CBD with η = 2 (variance σ² = η/2)
+ring.SampleCBD(poly, 2)
+```
+
+**Security**: Approximates Gaussian for small η
+**Use Case**: Kyber/ML-KEM key generation
+
+## Discrete Gaussian Implementation
+
+### Cumulative Distribution Table (CDT)
+
+For small σ (≤ 19), use precomputed CDT:
+
+```cpp
+// CDT-based sampling
+typedef struct {
+    uint64_t* table;     // CDF values
+    size_t table_size;   // Number of entries
+    double sigma;        // Standard deviation
+} GaussianCDT;
+
+// Create CDT for σ = 3.19
+GaussianCDT* cdt = lattice_gaussian_cdt_create(3.19, precision);
+
+// Sample using CDT
+int64_t sample = lattice_gaussian_cdt_sample(cdt, prng);
+```
+
+### Rejection Sampling
+
+For larger σ, use rejection sampling:
+
+```cpp
+// Rejection sampling parameters
+double sigma = 215.0;  // Large σ
+double tail_bound = 12.0 * sigma;  // Negligible probability beyond
+
+// Sample with rejection
+int64_t sample = lattice_gaussian_reject_sample(sigma, tail_bound, prng);
+```
+
+### Constant-Time Sampling
+
+To prevent timing attacks:
+
+```go
+// Constant-time Gaussian (bit-sliced CDT)
+ring.SampleGaussianCT(poly, sigma)
+
+// Constant-time ternary
+ring.SampleTernaryCT(poly, hammingWeight)
+```
+
+## Random Number Generation
+
+### PRNG Interface
+
+```cpp
+// PRNG context for deterministic sampling
+typedef struct {
+    void* state;
+    int (*random_bytes)(void* state, uint8_t* buf, size_t len);
+} LatticePRNG;
+
+// Use system CSPRNG
+LatticePRNG* prng = lattice_prng_system();
+
+// Use deterministic PRNG (for testing/reproducibility)
+uint8_t seed[32] = {...};
+LatticePRNG* prng = lattice_prng_create_chacha(seed);
+```
+
+### Go PRNG
+
+```go
+import "crypto/rand"
+
+// Default: crypto/rand.Reader
+ring.SampleUniform(poly)
+
+// Custom source
+ring.SampleUniformFrom(poly, customReader)
+
+// Deterministic (for testing)
+seed := [32]byte{...}
+prng := lattice.NewChaCha20PRNG(seed[:])
+ring.SampleUniformFrom(poly, prng)
+```
+
+## Security Considerations
+
+### Gaussian Parameter Selection
+
+The standard deviation σ affects security:
+
+| σ | Security Level | Use Case |
+|---|----------------|----------|
+| 2.00 | 80-bit | Testing only |
+| 3.19 | 128-bit | Standard (NIST Level 1) |
+| 4.00 | 192-bit | NIST Level 3 |
+| 5.00 | 256-bit | NIST Level 5 |
+
+### Ternary vs Gaussian Trade-offs
+
+| Property | Ternary | Gaussian |
+|----------|---------|----------|
+| Coefficient Size | {-1, 0, 1} | Z_q |
+| Security Proof | Conditional | Unconditional |
+| Sampling Speed | Fast | Slower |
+| Multiplication | Faster | Standard |
+
+### Timing Attack Prevention
+
+For secret key sampling, always use constant-time variants:
+
+```go
+// DON'T: Variable-time sampling for secrets
+ring.SampleGaussian(secretKey, sigma)
+
+// DO: Constant-time sampling
+ring.SampleGaussianCT(secretKey, sigma)
+```
+
+## Batch Sampling
+
+For efficiency, sample multiple polynomials together:
+
+```cpp
+// Batch uniform sampling (GPU-accelerated)
+lattice_sample_batch_uniform(ring, polys, count, prng);
+
+// Batch Gaussian
+lattice_sample_batch_gaussian(ring, polys, count, sigma, prng);
+```
+
+```go
+// Go batch sampling
+polys := make([]*Poly, 100)
+for i := range polys {
+    polys[i] = ring.NewPoly()
+}
+ring.SampleUniformBatch(polys)
+```
+
+## Common Parameters
+
+### Kyber/ML-KEM Parameters
+
+```go
+// Kyber-512 (NIST Level 1)
+ring, _ := lattice.NewRing(256, []uint64{3329})
+ring.SampleCBD(poly, 3)  // η = 3
+
+// Kyber-768 (NIST Level 3)
+ring, _ := lattice.NewRing(256, []uint64{3329})
+ring.SampleCBD(poly, 2)  // η = 2
+
+// Kyber-1024 (NIST Level 5)
+ring, _ := lattice.NewRing(256, []uint64{3329})
+ring.SampleCBD(poly, 2)  // η = 2
+```
+
+### CKKS Parameters
+
+```go
+// CKKS encryption
+ring, _ := lattice.NewRing(16384, ckksModuli)
+ring.SampleGaussian(error, 3.19)
+ring.SampleTernary(secret, 64)  // Sparse secret
+```
+
+### BFV/BGV Parameters
+
+```go
+// BFV encryption
+ring, _ := lattice.NewRing(4096, bfvModuli)
+ring.SampleGaussian(error, 3.19)
+ring.SampleUniform(random)
+```
+
+## Related Topics
+
+- [Polynomial Rings](/docs/concepts/ring) - Ring structure and operations
+- [Go Bindings](/docs/api/go-bindings) - Go API reference
+- [C API](/docs/api/c-api) - C API reference

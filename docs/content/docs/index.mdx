@@ -1,0 +1,130 @@
+---
+title: Introduction
+description: GPU-accelerated lattice cryptography library for post-quantum cryptography
+---
+
+# lux-lattice
+
+lux-lattice is a high-performance lattice cryptography library designed for post-quantum cryptographic operations. Built on top of [lux-gpu](/gpu), it provides GPU-accelerated implementations of fundamental lattice operations including Number Theoretic Transform (NTT), polynomial ring arithmetic, and sampling algorithms.
+
+## Key Features
+
+- **GPU Acceleration**: Leverages lux-gpu for optimal performance on Metal (Apple Silicon), CUDA (NVIDIA), and CPU backends
+- **NTT Operations**: Fast polynomial multiplication using Cooley-Tukey and Gentleman-Sande algorithms
+- **Ring-LWE Support**: Polynomial ring operations in R_q = Z_q[X]/(X^n + 1)
+- **Cryptographic Sampling**: Discrete Gaussian, uniform, and ternary sampling
+- **Montgomery Arithmetic**: Efficient modular multiplication
+- **Go Bindings**: Full CGO bindings for integration with Go applications
+
+## Architecture
+
+```
+lux-lattice
+    │
+    └── lux-gpu (GPU abstraction layer)
+            │
+            ├── Metal (Apple Silicon)
+            ├── CUDA (NVIDIA GPUs)
+            └── CPU (SIMD fallback)
+```
+
+## Use Cases
+
+lux-lattice is designed for:
+
+- **Threshold Signatures**: Ringtail post-quantum threshold signature scheme
+- **Homomorphic Encryption**: Polynomial operations for FHE schemes
+- **Key Exchange**: Ring-LWE based key encapsulation
+- **Digital Signatures**: MLWE-based signature schemes (Dilithium-style)
+
+## Quick Start
+
+### C++ Usage
+
+```cpp
+#include <lux/lattice/lattice.h>
+
+// Create NTT context for n=1024, prime q
+LatticeNTTContext* ctx;
+int result = lattice_ntt_create(&ctx, 1024, 0x7ffe0001ULL);
+
+// Allocate polynomial
+uint64_t* poly = (uint64_t*)malloc(1024 * sizeof(uint64_t));
+
+// Forward NTT (in-place)
+lattice_ntt_forward(ctx, poly);
+
+// Inverse NTT (in-place)
+lattice_ntt_inverse(ctx, poly);
+
+// Cleanup
+lattice_ntt_destroy(ctx);
+```
+
+### Go Usage
+
+```go
+import "github.com/luxfi/lattice"
+
+// Create ring with n=1024, modulus q
+ring, err := lattice.NewRing(1024, []uint64{0x7ffe0001})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Create polynomial
+poly := ring.NewPoly()
+
+// Sample uniformly
+ring.SampleUniform(poly)
+
+// Forward NTT
+ring.NTT(poly)
+
+// Inverse NTT
+ring.InverseNTT(poly)
+```
+
+## Installation
+
+### CMake (C++)
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(
+    lux_lattice
+    GIT_REPOSITORY https://github.com/luxfi/lattice.git
+    GIT_TAG main
+)
+FetchContent_MakeAvailable(lux_lattice)
+
+target_link_libraries(your_target PRIVATE lux_lattice)
+```
+
+### Go
+
+```bash
+go get github.com/luxfi/lattice
+```
+
+Requires CGO and the lux-lattice C library installed.
+
+## Performance
+
+Benchmarks on Apple M1 Max:
+
+| Operation | n=1024 | n=2048 | n=4096 |
+|-----------|--------|--------|--------|
+| NTT Forward | 12μs | 28μs | 65μs |
+| NTT Inverse | 14μs | 31μs | 72μs |
+| Poly Multiply | 35μs | 82μs | 195μs |
+
+GPU acceleration provides 10-50x speedup over CPU for batch operations.
+
+## Next Steps
+
+- [NTT Operations](/docs/concepts/ntt) - Learn about the Number Theoretic Transform
+- [Polynomial Rings](/docs/concepts/ring) - Polynomial arithmetic in R_q
+- [Sampling](/docs/concepts/sampling) - Cryptographic sampling algorithms
+- [C API Reference](/docs/api/c-api) - Complete C API documentation
+- [Go Bindings](/docs/api/go-bindings) - Go package documentation
