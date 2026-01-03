@@ -43,8 +43,8 @@ See [github.com/luxfi/lattice](https://github.com/luxfi/lattice) for Go bindings
 
 ## Documentation
 
-- [API Reference](https://lattice.lux.network)
-- [Library Contract](https://github.com/luxcpp/lattice/blob/main/cmake/LuxLibrary.cmake)
+- [Full Documentation](https://luxfi.github.io/crypto/docs/cpp-libraries)
+- [GPU Acceleration](https://luxfi.github.io/crypto/docs/gpu-acceleration)
 
 ## License
 
